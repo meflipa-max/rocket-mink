@@ -173,7 +173,7 @@ export function resolveArenaSphere(pos: Vec3, radius: number): SurfaceHit {
       if (pen > maxPen) {
         maxPen = pen;
         bestNormal = wallNormal;
-        isFloorOrRamp = pos.y < ARENA_HEIGHT - 2;
+        isFloorOrRamp = pos.y < ARENA_HEIGHT - RAMP_RADIUS;
       }
     }
   }

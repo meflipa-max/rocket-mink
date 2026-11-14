@@ -218,7 +218,7 @@ export function TitleScreen({
       <div className="relative z-10 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-300 hud-text-shadow">
         <span>WASD / Frecce: Guida &amp; Assetto</span>
         <span aria-hidden="true">·</span>
-        <span>Spazio: Salto &amp; Flip Direzionale</span>
+        <span>Spazio x2 + W/A/S/D: Capriola Dritta, Laterale o Obliqua</span>
         <span aria-hidden="true">·</span>
         <span>Shift / Tasto Destro: Turbo</span>
         <span aria-hidden="true">·</span>

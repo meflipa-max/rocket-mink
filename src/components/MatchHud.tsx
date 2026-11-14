@@ -280,8 +280,17 @@ export function MatchHud({
         </div>
       )}
 
-      {/* Bottom-Left Ball Cam Indicator + Quick Chat Bar */}
+      {/* Bottom-Left Wall Drive Indicator + Ball Cam Indicator + Quick Chat Bar */}
       <div className="fixed bottom-5 left-5 flex flex-col gap-2 pointer-events-auto">
+        {hud.onWall && (
+          <div
+            data-testid="wall-drive-indicator"
+            className="px-3 py-1 rounded-lg bg-sky-500/20 border border-sky-400/60 text-sky-200 text-xs font-extrabold tracking-wide w-fit shadow-lg hud-text-shadow pointer-events-none"
+          >
+            GUIDA SU MURO · Spazio per staccarti
+          </div>
+        )}
+
         <button
           type="button"
           tabIndex={-1}

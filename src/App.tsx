@@ -34,6 +34,7 @@ const INITIAL_HUD: HudTelemetry = {
   boost: 33,
   speedKph: 0,
   supersonic: false,
+  onWall: false,
   ballCam: true,
   scoreBlue: 0,
   scoreOrange: 0,
@@ -161,6 +162,9 @@ export default function App() {
             subtitle: 'Golden Goal attivo',
           });
         } else if (ev.type === 'match_ended') {
+          if (controllerRef.current) {
+            setCarsSnapshot(controllerRef.current.getCarsSnapshot());
+          }
           setScreenState('gameover');
           controllerRef.current?.setMode('gameover');
         }
@@ -245,6 +249,7 @@ export default function App() {
     ctrl.onHudUpdate = (nextHud) => {
       setHud(nextHud);
       if (nextHud.phase === 'ended' && screenStateRef.current === 'playing') {
+        setCarsSnapshot(ctrl.getCarsSnapshot());
         setScreenState('gameover');
         ctrl.setMode('gameover');
       }
@@ -376,11 +381,15 @@ export default function App() {
       });
 
       sock.on('game:state', (snapshot: GameStateSnapshot) => {
-        setCarsSnapshot(snapshot.cars);
         controllerRef.current?.applyNetworkSnapshot(snapshot);
       });
 
       sock.on('game:events', (events: SimulationEvent[]) => {
+        if (events.some((ev) => ev.type === 'goal' || ev.type === 'demo' || ev.type === 'save')) {
+          if (controllerRef.current) {
+            setCarsSnapshot([...controllerRef.current.getCarsSnapshot()]);
+          }
+        }
         controllerRef.current?.handleSimulationEvents(events);
       });
 
@@ -423,6 +432,9 @@ export default function App() {
 
       if (e.code === 'Tab' && screenStateRef.current === 'playing') {
         e.preventDefault();
+        if (controllerRef.current) {
+          setCarsSnapshot([...controllerRef.current.getCarsSnapshot()]);
+        }
         setShowScoreboard(true);
       }
     };

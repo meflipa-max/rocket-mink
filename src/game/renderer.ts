@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { ARENA_HALF_X, ARENA_HALF_Z, ARENA_HEIGHT, GOAL_HEIGHT } from '../shared/arena';
+import { ARENA_HALF_X, ARENA_HALF_Z, ARENA_HEIGHT, CAR_RIDE_HEIGHT, GOAL_HEIGHT } from '../shared/arena';
 import { clamp, lerp } from '../shared/math3d';
+import { reconcilePredictedSnapshot } from '../shared/netSnapshot';
 import { NEUTRAL_INPUT, stepSimulation, type SimulationEvent } from '../shared/physics';
 import type {
   ArenaId,
@@ -23,6 +24,7 @@ export interface HudTelemetry {
   boost: number;
   speedKph: number;
   supersonic: boolean;
+  onWall: boolean;
   ballCam: boolean;
   scoreBlue: number;
   scoreOrange: number;
@@ -58,6 +60,8 @@ export interface GoalMarkerProjection {
 const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _v3 = new THREE.Vector3();
+const _v4 = new THREE.Vector3();
+const _up = new THREE.Vector3(0, 1, 0);
 const _q1 = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
 const _proj = new THREE.Vector3();
@@ -277,10 +281,12 @@ export class GameViewportController {
       this.activeState.cars.find((c) => c.id === this.localPlayerId) || this.activeState.cars[0];
     if (!localCar) return;
     const speed = Math.hypot(localCar.vel.x, localCar.vel.y, localCar.vel.z);
+    const onWall = localCar.onGround && localCar.groundNormal.y < 0.7;
     this.onHudUpdate?.({
       boost: Math.round(localCar.boost),
       speedKph: Math.round(speed * 3.6),
       supersonic: localCar.supersonic,
+      onWall,
       ballCam: this.ballCam,
       scoreBlue: this.activeState.scoreBlue,
       scoreOrange: this.activeState.scoreOrange,
@@ -335,25 +341,15 @@ export class GameViewportController {
       this.activeState = structuredClone(snapshot);
       this.syncCarRigsFromState(this.activeState);
     } else {
-      // Update discrete match metadata immediately
-      this.activeState.tick = snapshot.tick;
-      this.activeState.phase = snapshot.phase;
-      this.activeState.phaseTimer = snapshot.phaseTimer;
-      this.activeState.clockSeconds = snapshot.clockSeconds;
-      this.activeState.isOvertime = snapshot.isOvertime;
-      this.activeState.scoreBlue = snapshot.scoreBlue;
-      this.activeState.scoreOrange = snapshot.scoreOrange;
-      this.activeState.lastGoalScorer = snapshot.lastGoalScorer;
-      this.activeState.lastGoalTeam = snapshot.lastGoalTeam;
-      this.activeState.lastGoalSpeedKph = snapshot.lastGoalSpeedKph;
-      this.activeState.winner = snapshot.winner;
-      this.activeState.boostPads = snapshot.boostPads;
-      this.activeState.cars = snapshot.cars;
-      this.activeState.ball = snapshot.ball;
+      reconcilePredictedSnapshot(this.activeState, snapshot, this.localPlayerId);
     }
   }
 
-  public handleSimulationEvents(events: SimulationEvent[]): void {
+  public getCarsSnapshot(): CarState[] {
+    return this.activeState ? this.activeState.cars : [];
+  }
+
+  public handleSimulationEvents(events: SimulationEvent[], fromLocalPred = false): void {
     for (const ev of events) {
       if (ev.type === 'ball_hit') {
         soundEngine.playBallHit(ev.speed);
@@ -362,9 +358,11 @@ export class GameViewportController {
       } else if (ev.type === 'wall_hit') {
         soundEngine.playBallHit(ev.speed * 0.7);
       } else if (ev.type === 'jump' && ev.carId === this.localPlayerId) {
+        if (this.isMultiplayer && !fromLocalPred) continue;
         soundEngine.playJump(false);
         this.particles.spawnBurst(ev.pos.x, ev.pos.y, ev.pos.z, 6, 6, '#e2e8f0', 0.65, 0.3);
       } else if (ev.type === 'flip' && ev.carId === this.localPlayerId) {
+        if (this.isMultiplayer && !fromLocalPred) continue;
         soundEngine.playJump(true);
         this.particles.spawnBurst(ev.pos.x, ev.pos.y, ev.pos.z, 10, 9, '#38bdf8', 0.75, 0.35);
       } else if (ev.type === 'boost_pickup' && ev.carId === this.localPlayerId) {
@@ -624,18 +622,36 @@ export class GameViewportController {
 
     if (this.mode === 'playing' && !this.paused) {
       if (this.isMultiplayer) {
-        // Stream local inputs to server at up to 60Hz (or immediately on discrete change)
+        // Stream local inputs to host at up to 60Hz (and immediately on any discrete button/axis change)
         this.inputSendAccum += dt;
         const discreteChanged =
           input.jump !== this.prevInput.jump ||
           input.boost !== this.prevInput.boost ||
+          input.handbrake !== this.prevInput.handbrake ||
           input.throttle !== this.prevInput.throttle ||
-          input.steer !== this.prevInput.steer;
-        if (discreteChanged || this.inputSendAccum >= 1 / 45) {
+          input.steer !== this.prevInput.steer ||
+          input.roll !== this.prevInput.roll;
+        if (discreteChanged || this.inputSendAccum >= 1 / 60) {
           this.inputSendAccum = 0;
           this.onSendInput?.(input);
         }
         this.prevInput = input;
+
+        // 60fps local prediction & ball/car dead-reckoning between host snapshots (non-authoritative)
+        if (this.activeState.phase === 'active') {
+          const predEvents = stepSimulation(
+            this.activeState,
+            { [this.localPlayerId]: input },
+            dt,
+            false,
+          );
+          // Trigger local jump/flip feedback immediately without waiting for host round-trip
+          for (const ev of predEvents) {
+            if ((ev.type === 'jump' || ev.type === 'flip') && ev.carId === this.localPlayerId) {
+              this.handleSimulationEvents([ev], true);
+            }
+          }
+        }
       } else {
         // Offline local simulation
         const events = stepSimulation(
@@ -650,7 +666,7 @@ export class GameViewportController {
     }
 
     // Visual interpolation & boost particle emission
-    const interpFactor = this.isMultiplayer ? clamp(1 - Math.exp(-24 * dt), 0, 1) : 1;
+    const interpFactor = this.isMultiplayer ? clamp(1 - Math.exp(-36 * dt), 0, 1) : 1;
     this.displayBallPos.lerp(
       _v1.set(
         this.activeState.ball.pos.x,
@@ -681,8 +697,9 @@ export class GameViewportController {
       if (!rig || !disp) continue;
 
       const hidden = car.demolishedTimer > 0;
+      const carOnWall = car.onGround && car.groundNormal.y < 0.7;
       rig.group.visible = !hidden;
-      rig.contactShadow.visible = !hidden && car.pos.y < 10;
+      rig.contactShadow.visible = !hidden && (car.onGround || car.pos.y < 10);
 
       if (hidden) continue;
 
@@ -694,10 +711,22 @@ export class GameViewportController {
       rig.group.position.copy(disp.pos);
       rig.group.quaternion.copy(disp.quat);
 
-      // Ground contact shadow positioned directly below car
-      rig.contactShadow.position.set(disp.pos.x, 0.025, disp.pos.z);
-      const shadowAlpha = clamp(0.55 - disp.pos.y * 0.05, 0.1, 0.55);
-      (rig.contactShadow.material as THREE.MeshBasicMaterial).opacity = shadowAlpha;
+      // Surface-aligned contact shadow (projects onto walls/ramps when grounded so wall grip is unmistakable)
+      if (car.onGround) {
+        _v4.set(car.groundNormal.x, car.groundNormal.y, car.groundNormal.z).normalize();
+        rig.contactShadow.position
+          .copy(disp.pos)
+          .addScaledVector(_v4, -(CAR_RIDE_HEIGHT - 0.03));
+        rig.contactShadow.quaternion.setFromUnitVectors(_up, _v4);
+        rig.contactShadow.scale.setScalar(carOnWall ? 1.14 : 1.0);
+        (rig.contactShadow.material as THREE.MeshBasicMaterial).opacity = carOnWall ? 0.68 : 0.55;
+      } else {
+        rig.contactShadow.position.set(disp.pos.x, 0.025, disp.pos.z);
+        rig.contactShadow.quaternion.identity();
+        rig.contactShadow.scale.setScalar(1.0);
+        const shadowAlpha = clamp(0.55 - disp.pos.y * 0.05, 0.08, 0.55);
+        (rig.contactShadow.material as THREE.MeshBasicMaterial).opacity = shadowAlpha;
+      }
 
       // Wheel spin & front axle steering visual
       disp.wheelSpin = car.wheelSpin;
@@ -705,6 +734,25 @@ export class GameViewportController {
       for (let i = 0; i < 4; i++) {
         if (i < 2) rig.wheelPivots[i].rotation.y = disp.steerAngle;
         rig.wheelMeshes[i].rotation.x = disp.wheelSpin;
+      }
+
+      // Subtle wall-grip wheel dust/sparks so riding walls feels distinct
+      const carSpeed = Math.hypot(car.vel.x, car.vel.y, car.vel.z);
+      if (carOnWall && carSpeed > 7 && Math.random() < 0.35) {
+        _v4.set(car.groundNormal.x, car.groundNormal.y, car.groundNormal.z).normalize();
+        _v2.set(0, -0.25, -1.6).applyQuaternion(disp.quat).add(disp.pos);
+        this.particles.spawn(
+          _v2.x + (Math.random() - 0.5) * 0.8,
+          _v2.y + (Math.random() - 0.5) * 0.4,
+          _v2.z + (Math.random() - 0.5) * 0.8,
+          _v4.x * 3.5,
+          _v4.y * 3.5,
+          _v4.z * 3.5,
+          '#7dd3fc',
+          0.55,
+          0.03,
+          0.2,
+        );
       }
 
       // Boost flame & particles
@@ -791,6 +839,8 @@ export class GameViewportController {
       const carQuat = disp
         ? disp.quat
         : _q2.set(localCar.quat.x, localCar.quat.y, localCar.quat.z, localCar.quat.w);
+      const onWall = localCar.onGround && localCar.groundNormal.y < 0.7;
+      _v4.set(localCar.groundNormal.x, localCar.groundNormal.y, localCar.groundNormal.z).normalize();
 
       if (this.ballCam) {
         // Direction from ball to car (horizontal)
@@ -799,9 +849,14 @@ export class GameViewportController {
         if (_v2.lengthSq() < 0.2) _v2.set(0, 0, -1);
         _v2.normalize();
 
-        // Desired camera offset behind car relative to ball line
+        // Desired camera offset behind car relative to ball line (pull inward when riding a wall)
         _v3.copy(carPos).addScaledVector(_v2, 10.6);
-        _v3.y = clamp(carPos.y + 3.85, 2.2, ARENA_HEIGHT - 2.0);
+        if (onWall) {
+          _v3.addScaledVector(_v4, 4.8);
+          _v3.y = clamp(carPos.y + 2.6, 2.2, ARENA_HEIGHT - 2.0);
+        } else {
+          _v3.y = clamp(carPos.y + 3.85, 2.2, ARENA_HEIGHT - 2.0);
+        }
         _v3.x = clamp(_v3.x, -ARENA_HALF_X + 1.5, ARENA_HALF_X - 1.5);
         _v3.z = clamp(_v3.z, -ARENA_HALF_Z + 1.5, ARENA_HALF_Z - 1.5);
 
@@ -813,22 +868,34 @@ export class GameViewportController {
         _v2.y = Math.max(1.2, _v2.y + 0.65);
         this.cameraLook.lerp(_v2, clamp(1 - Math.exp(-14 * dt), 0, 1));
       } else {
-        // Car Cam: aligned behind car heading
+        // Car Cam: aligned behind car heading (with wall-normal pull inward on walls)
         _v2.set(0, 0, 1).applyQuaternion(carQuat);
-        _v2.y = 0;
-        if (_v2.lengthSq() < 0.05) _v2.set(0, 0, 1);
-        _v2.normalize();
+        if (onWall) {
+          _v2.normalize();
+          _v3.copy(carPos).addScaledVector(_v2, -10.4).addScaledVector(_v4, 4.4);
+          _v3.y = clamp(_v3.y + 1.1, 2.0, ARENA_HEIGHT - 2.0);
+          _v3.x = clamp(_v3.x, -ARENA_HALF_X + 1.5, ARENA_HALF_X - 1.5);
+          _v3.z = clamp(_v3.z, -ARENA_HALF_Z + 1.5, ARENA_HALF_Z - 1.5);
+          this.cameraPos.lerp(_v3, clamp(1 - Math.exp(-11 * dt), 0, 1));
 
-        _v3.copy(carPos).addScaledVector(_v2, -10.8);
-        _v3.y = clamp(carPos.y + 3.6, 2.0, ARENA_HEIGHT - 2.0);
-        _v3.x = clamp(_v3.x, -ARENA_HALF_X + 1.5, ARENA_HALF_X - 1.5);
-        _v3.z = clamp(_v3.z, -ARENA_HALF_Z + 1.5, ARENA_HALF_Z - 1.5);
+          _v2.multiplyScalar(9).add(carPos).addScaledVector(_v4, 1.4);
+          this.cameraLook.lerp(_v2, clamp(1 - Math.exp(-14 * dt), 0, 1));
+        } else {
+          _v2.y = 0;
+          if (_v2.lengthSq() < 0.05) _v2.set(0, 0, 1);
+          _v2.normalize();
 
-        this.cameraPos.lerp(_v3, clamp(1 - Math.exp(-11 * dt), 0, 1));
+          _v3.copy(carPos).addScaledVector(_v2, -10.8);
+          _v3.y = clamp(carPos.y + 3.6, 2.0, ARENA_HEIGHT - 2.0);
+          _v3.x = clamp(_v3.x, -ARENA_HALF_X + 1.5, ARENA_HALF_X - 1.5);
+          _v3.z = clamp(_v3.z, -ARENA_HALF_Z + 1.5, ARENA_HALF_Z - 1.5);
 
-        _v2.multiplyScalar(9).add(carPos);
-        _v2.y += 1.4;
-        this.cameraLook.lerp(_v2, clamp(1 - Math.exp(-14 * dt), 0, 1));
+          this.cameraPos.lerp(_v3, clamp(1 - Math.exp(-11 * dt), 0, 1));
+
+          _v2.multiplyScalar(9).add(carPos);
+          _v2.y += 1.4;
+          this.cameraLook.lerp(_v2, clamp(1 - Math.exp(-14 * dt), 0, 1));
+        }
       }
 
       // Trauma shake + speed FOV kick
@@ -863,10 +930,12 @@ export class GameViewportController {
     if (this.hudAccum >= 1 / 15 && localCar && this.activeState) {
       this.hudAccum = 0;
       const speed = Math.hypot(localCar.vel.x, localCar.vel.y, localCar.vel.z);
+      const onWall = localCar.onGround && localCar.groundNormal.y < 0.7;
       this.onHudUpdate?.({
         boost: Math.round(localCar.boost),
         speedKph: Math.round(speed * 3.6),
         supersonic: localCar.supersonic,
+        onWall,
         ballCam: this.ballCam,
         scoreBlue: this.activeState.scoreBlue,
         scoreOrange: this.activeState.scoreOrange,

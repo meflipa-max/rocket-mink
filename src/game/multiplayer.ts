@@ -1,13 +1,21 @@
 import { createClient, type RealtimeChannel } from '@supabase/supabase-js';
 import { HostSimulation } from '../shared/hostSimulation';
 import {
+  packCompactSnapshot,
+  unpackCompactSnapshot,
+  type CompactGameStateWire,
+  type RosterEntry,
+} from '../shared/netSnapshot';
+import type {
+  GameStateSnapshot,
+  LobbyPlayer,
+  PlayerInput,
+  RoomDetail,
+  RoomSummary,
+} from '../shared/types';
+import {
   DEFAULT_CUSTOMIZATION_BLUE,
   DEFAULT_CUSTOMIZATION_ORANGE,
-  type LobbyPlayer,
-  type PlayerInput,
-  type RoomDetail,
-  type RoomSummary,
-  type Team,
 } from '../shared/types';
 import type { PlayerSeed } from '../shared/physics';
 import {
@@ -18,7 +26,12 @@ import {
 
 type Message = { event: string; payload?: any };
 type Signal = { from: string; to?: string; kind: string; data?: any };
-type Peer = { pc: RTCPeerConnection; channel?: RTCDataChannel; candidates: RTCIceCandidateInit[] };
+type Peer = {
+  pc: RTCPeerConnection;
+  channel?: RTCDataChannel;
+  stateChannel?: RTCDataChannel;
+  candidates: RTCIceCandidateInit[];
+};
 
 const ICE_CONFIG: RTCConfiguration = {
   iceServers: [
@@ -64,6 +77,11 @@ export class MultiplayerClient {
   private joinTimeout?: ReturnType<typeof setTimeout>;
   private retryTimer?: ReturnType<typeof setTimeout>;
   private relayFallbackTimer?: ReturnType<typeof setTimeout>;
+  private stateSeq = 0;
+  private inputSeq = 0;
+  private lastRecvStateSeq = 0;
+  private lastPeerInputSeq = new Map<string, number>();
+  private wireTemplate: GameStateSnapshot | null = null;
 
   constructor() {
     this.signal = this.supabase.channel('rocket-mink:signal:v1', {
@@ -149,14 +167,20 @@ export class MultiplayerClient {
     }
   }
 
-  private sendPeer(id: string, event: string, payload?: any) {
+  private sendPeer(id: string, event: string, payload?: any, unreliable = false) {
     if (this.relayPeers.has(id) || (this.usingRelay && id === this.hostId)) {
       this.sendRoomRelay(event, payload, id);
       return;
     }
-    const channel = this.peers.get(id)?.channel;
-    if (channel?.readyState === 'open') {
-      channel.send(JSON.stringify({ event, payload }));
+    const peer = this.peers.get(id);
+    if (!peer) return;
+    const ch =
+      unreliable && peer.stateChannel?.readyState === 'open'
+        ? peer.stateChannel
+        : peer.channel;
+    if (ch?.readyState === 'open') {
+      if (unreliable && ch.bufferedAmount > 24576) return;
+      ch.send(JSON.stringify({ event, payload }));
     }
   }
 
@@ -247,7 +271,13 @@ export class MultiplayerClient {
         this.sendSignal('candidate', e.candidate.toJSON(), id);
       }
     };
-    peer.pc.ondatachannel = (e) => this.bindChannel(id, peer, e.channel);
+    peer.pc.ondatachannel = (e) => {
+      if (e.channel.label === 'state') {
+        this.bindStateChannel(peer, e.channel, id);
+      } else {
+        this.bindChannel(id, peer, e.channel);
+      }
+    };
     peer.pc.onconnectionstatechange = () => {
       if (peer.pc.connectionState === 'failed' || peer.pc.connectionState === 'closed') {
         if (this.pendingJoin && this.hostId !== this.id) {
@@ -258,6 +288,17 @@ export class MultiplayerClient {
       }
     };
     return peer;
+  }
+
+  private bindStateChannel(peer: Peer, channel: RTCDataChannel, id: string) {
+    peer.stateChannel = channel;
+    channel.onmessage = (e) => {
+      try {
+        this.onPeerMessage(id, JSON.parse(e.data) as Message);
+      } catch {
+        // Ignore malformed unreliable frames.
+      }
+    };
   }
 
   private bindChannel(id: string, peer: Peer, channel: RTCDataChannel) {
@@ -284,11 +325,15 @@ export class MultiplayerClient {
   private peerLeft(id: string) {
     const wasWebRtc = this.peers.delete(id);
     const wasRelay = this.relayPeers.delete(id);
+    this.lastPeerInputSeq.delete(id);
     if (!wasWebRtc && !wasRelay) return;
 
     if (this.hostId === this.id && this.room) {
       this.room.players = this.room.players.filter((p) => p.id !== id);
       this.simulation?.demoteToBot(id);
+      if (this.room.inProgress && this.simulation) {
+        this.broadcastRoster(this.simulation.state);
+      }
       this.update();
     } else if (id === this.hostId) {
       this.leave();
@@ -322,6 +367,11 @@ export class MultiplayerClient {
         }
         const peer = this.newPeer(s.from);
         this.bindChannel(s.from, peer, peer.pc.createDataChannel('game'));
+        this.bindStateChannel(
+          peer,
+          peer.pc.createDataChannel('state', { ordered: false, maxRetransmits: 0 }),
+          s.from,
+        );
         const offer = await peer.pc.createOffer();
         await peer.pc.setLocalDescription(offer);
         this.sendSignal(
@@ -444,10 +494,22 @@ export class MultiplayerClient {
         team: player.team,
         customization: player.customization,
       });
+      this.broadcastRoster(this.simulation.state);
       this.sendPeer(id, 'match:started', this.simulation.state);
     }
 
     this.update();
+  }
+
+  private broadcastRoster(state: GameStateSnapshot) {
+    const roster: RosterEntry[] = state.cars.map((c) => ({
+      id: c.id,
+      name: c.name,
+      team: c.team,
+      isBot: c.isBot,
+      customization: c.customization,
+    }));
+    this.broadcast('game:roster', roster);
   }
 
   private clearJoinTimers() {
@@ -482,6 +544,33 @@ export class MultiplayerClient {
       if (msg.event === 'room:updated') {
         this.room = msg.payload;
       }
+      if (msg.event === 'match:started') {
+        this.lastRecvStateSeq = 0;
+        this.wireTemplate = structuredClone(msg.payload);
+      }
+      if (msg.event === 'game:roster' && this.wireTemplate && Array.isArray(msg.payload)) {
+        const entries = msg.payload as RosterEntry[];
+        this.wireTemplate.cars = entries.map((entry, idx) => {
+          const existing = this.wireTemplate!.cars[idx];
+          return {
+            ...(existing || this.wireTemplate!.cars[0]),
+            id: entry.id,
+            name: entry.name,
+            team: entry.team,
+            isBot: entry.isBot,
+            customization: entry.customization,
+          };
+        });
+        return;
+      }
+      if (msg.event === 'game:state:c') {
+        const wire = msg.payload as CompactGameStateWire;
+        if (!wire || !this.wireTemplate || wire.seq <= this.lastRecvStateSeq) return;
+        this.lastRecvStateSeq = wire.seq;
+        const unpacked = unpackCompactSnapshot(wire, this.wireTemplate);
+        this.fire('game:state', unpacked);
+        return;
+      }
       this.fire(msg.event, msg.payload);
       return;
     }
@@ -500,7 +589,14 @@ export class MultiplayerClient {
     const player = room.players.find((p) => p.id === id);
     if (!player) return;
     if (event === 'player:input') {
-      this.simulation?.setInput(id, data as PlayerInput);
+      if (data && typeof data.seq === 'number' && data.input) {
+        const prevSeq = this.lastPeerInputSeq.get(id) ?? 0;
+        if (data.seq <= prevSeq) return;
+        this.lastPeerInputSeq.set(id, data.seq);
+        this.simulation?.setInput(id, data.input as PlayerInput);
+      } else {
+        this.simulation?.setInput(id, data as PlayerInput);
+      }
       return;
     }
     if (event === 'room:leave') {
@@ -565,6 +661,7 @@ export class MultiplayerClient {
     }
     this.simulation = new HostSimulation(this.room.mode, this.room.arenaId, seeds);
     this.room.inProgress = true;
+    this.stateSeq = 0;
     this.broadcast('match:started', this.simulation.state);
     this.update();
     let last = performance.now();
@@ -575,7 +672,29 @@ export class MultiplayerClient {
       const events = this.simulation.step((now - last) / 1000);
       last = now;
       if (events.length) this.broadcast('game:events', events);
-      if (++ticks % 3 === 0) this.broadcast('game:state', this.simulation.state);
+      ticks += 1;
+      const sendWebRtc = ticks % 2 === 0; // 30Hz over unreliable WebRTC DataChannel
+      const sendRelay = ticks % 3 === 0 && this.relayPeers.size > 0; // 20Hz compact over Supabase Relay
+
+      if (sendWebRtc) {
+        this.fire('game:state', structuredClone(this.simulation.state));
+      }
+      if ((sendWebRtc && this.peers.size > 0) || sendRelay) {
+        const wire = packCompactSnapshot(this.simulation.state, ++this.stateSeq);
+        if (sendWebRtc && this.peers.size > 0) {
+          const serialized = JSON.stringify({ event: 'game:state:c', payload: wire });
+          for (const peer of this.peers.values()) {
+            const ch =
+              peer.stateChannel?.readyState === 'open' ? peer.stateChannel : peer.channel;
+            if (ch?.readyState === 'open' && ch.bufferedAmount < 24576) {
+              ch.send(serialized);
+            }
+          }
+        }
+        if (sendRelay) {
+          this.sendRoomRelay('game:state:c', wire);
+        }
+      }
     }, 1000 / 60);
   }
 
@@ -663,7 +782,16 @@ export class MultiplayerClient {
     if (this.hostId === this.id) {
       this.command(this.id, event, data);
     } else if (this.hostId || this.usingRelay) {
-      this.sendPeer(this.hostId, event, data);
+      if (event === 'player:input') {
+        this.sendPeer(
+          this.hostId,
+          'player:input',
+          { seq: ++this.inputSeq, input: data },
+          true,
+        );
+      } else {
+        this.sendPeer(this.hostId, event, data);
+      }
       if (event === 'room:leave') this.leave();
     }
     return this;
@@ -676,6 +804,11 @@ export class MultiplayerClient {
     this.simulation = null;
     this.room = null;
     this.pendingJoin = null;
+    this.wireTemplate = null;
+    this.stateSeq = 0;
+    this.inputSeq = 0;
+    this.lastRecvStateSeq = 0;
+    this.lastPeerInputSeq.clear();
     this.hostId = '';
     this.usingRelay = false;
     this.relayReady = false;

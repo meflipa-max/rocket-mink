@@ -143,3 +143,64 @@ test('tied score at 0:00 triggers overtime and golden goal ends the match', () =
   resetKickoff(state);
   assert.equal(state.phase, 'countdown');
 });
+
+test('driving straight stays grounded across floor and smoothly climbs curved wall ramp', () => {
+  const state = createMatchState('freeplay', 'dfh_night', [
+    { id: 'p1', name: 'WallDriver', team: 'blue' },
+  ]);
+  // Aim straight toward right side wall (+X)
+  state.cars[0].pos = { x: 40, y: CAR_RIDE_HEIGHT, z: 0 };
+  state.cars[0].quat = { x: 0, y: Math.SQRT1_2, z: 0, w: Math.SQRT1_2 };
+
+  for (let i = 0; i < 150; i++) {
+    stepSimulation(state, { p1: { ...NEUTRAL_INPUT, throttle: 1 } }, 1 / 60);
+    assert.equal(state.cars[0].onGround, true, `Car should stay grounded on frame ${i}`);
+  }
+  assert.ok(state.cars[0].pos.y > 4, 'Car should climb up the wall smoothly');
+  assert.ok(state.cars[0].groundNormal.x < -0.5, 'Car groundNormal should point inward from +X wall');
+});
+
+test('sideways and diagonal flips impart lateral/diagonal impulse and rotate on proper axis', () => {
+  const state = createMatchState('freeplay', 'dfh_night', [
+    { id: 'p1', name: 'Flipper', team: 'blue' },
+  ]);
+  state.cars[0].pos = { x: 0, y: CAR_RIDE_HEIGHT, z: 0 };
+  state.cars[0].quat = { x: 0, y: 0, z: 0, w: 1 };
+
+  // Jump 1
+  stepSimulation(state, { p1: { ...NEUTRAL_INPUT, jump: true } }, 1 / 60);
+  for (let i = 0; i < 4; i++) stepSimulation(state, { p1: NEUTRAL_INPUT }, 1 / 60);
+
+  // Diagonal front-left flip (W + A + Space)
+  const evs = stepSimulation(
+    state,
+    { p1: { ...NEUTRAL_INPUT, throttle: 1, steer: 1, jump: true } },
+    1 / 60,
+  );
+  assert.equal(state.cars[0].isFlipping, true);
+  assert.ok(evs.some((e) => e.type === 'flip'));
+  assert.ok(state.cars[0].vel.z > 8, 'Diagonal flip surges forward (+Z)');
+  assert.ok(state.cars[0].vel.x > 8, 'Diagonal flip surges left (+X)');
+  assert.ok(Math.abs(state.cars[0].flipAxis.x) > 0.5 && Math.abs(state.cars[0].flipAxis.z) > 0.5);
+
+  // Pure sideways flip right via roll/steer (D + Space x2)
+  const sideState = createMatchState('freeplay', 'dfh_night', [
+    { id: 'p1', name: 'SideFlipper', team: 'blue' },
+  ]);
+  sideState.cars[0].pos = { x: 0, y: CAR_RIDE_HEIGHT, z: 0 };
+  sideState.cars[0].quat = { x: 0, y: 0, z: 0, w: 1 };
+  stepSimulation(sideState, { p1: { ...NEUTRAL_INPUT, jump: true } }, 1 / 60);
+  for (let i = 0; i < 4; i++) stepSimulation(sideState, { p1: NEUTRAL_INPUT }, 1 / 60);
+
+  const sideEvs = stepSimulation(
+    sideState,
+    { p1: { ...NEUTRAL_INPUT, steer: -1, jump: true } },
+    1 / 60,
+  );
+  assert.equal(sideState.cars[0].isFlipping, true);
+  assert.ok(sideEvs.some((e) => e.type === 'flip'));
+  assert.ok(sideState.cars[0].vel.x < -10, 'Right flip surges right (-X)');
+  assert.ok(Math.abs(sideState.cars[0].vel.z) < 1, 'Pure sideways flip has minimal Z surge');
+  assert.ok(Math.abs(sideState.cars[0].flipAxis.z) > 0.95, 'Sideways flip rolls around Z axis');
+});
+

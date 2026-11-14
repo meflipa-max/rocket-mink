@@ -201,6 +201,7 @@ export function stepSimulation(
   state: GameStateSnapshot,
   inputs: Record<string, PlayerInput>,
   dt: number,
+  authoritative = true,
 ): SimulationEvent[] {
   const events: SimulationEvent[] = [];
   const stepDt = clamp(dt, 0.001, 0.05);
@@ -246,7 +247,7 @@ export function stepSimulation(
   if (state.mode !== 'freeplay') {
     if (!state.isOvertime) {
       state.clockSeconds = Math.max(0, state.clockSeconds - stepDt);
-      if (state.clockSeconds <= 0) {
+      if (authoritative && state.clockSeconds <= 0) {
         // Rocket League rule: match ends on 0:00 if ball touches the ground (or immediately if grounded/decided)
         const ballOnGround = state.ball.pos.y <= BALL_RADIUS + 0.35 && state.ball.vel.y <= 0.5;
         if (ballOnGround) {
@@ -292,8 +293,8 @@ export function stepSimulation(
   // Car-to-Ball collisions
   resolveCarBallCollisions(state, events);
 
-  // Check goals
-  const scoringTeam = checkGoalScored(state.ball.pos, state.ball.radius);
+  // Check goals (host-authoritative so guest extrapolation never flashes phantom goals)
+  const scoringTeam = authoritative ? checkGoalScored(state.ball.pos, state.ball.radius) : null;
   if (scoringTeam) {
     const speedKph = Math.round(lenV3(state.ball.vel) * 3.6);
     if (state.mode === 'freeplay') {
@@ -446,21 +447,28 @@ function stepCarsOnly(
         car.quat = normQuat(mulQuat(yawQ, car.quat));
       }
 
-      // Align car up vector smoothly with surface normal (ground, ramp, wall, ceiling!)
+      // Align car up vector smoothly with surface normal (ground, ramp, wall!)
       const newUp = normV3(rotateVecByQuat(v3(0, 1, 0), car.quat));
       const alignQ = quatFromUnitVectors(newUp, car.groundNormal);
       const targetQuat = normQuat(mulQuat(alignQ, car.quat));
-      car.quat = slerpQuat(car.quat, targetQuat, clamp(22 * dt, 0, 1));
+      car.quat = slerpQuat(car.quat, targetQuat, clamp(24 * dt, 0, 1));
 
-      // Wall/Ceiling gravity vs adhesive tire force
-      const isVerticalOrCeiling = car.groundNormal.y < 0.55;
-      if (isVerticalOrCeiling && Math.abs(forwardSpeed) < 11.0) {
-        // Lose wall grip if too slow -> fall off wall!
+      // Floor gravity vs curved ramp / vertical wall wheel adhesion
+      const isSteepWall = car.groundNormal.y < 0.65;
+      if (car.groundNormal.y < 0.35 && Math.abs(forwardSpeed) < 7.0) {
+        // Lose wall grip if too slow on a near-vertical wall -> detach smoothly
         car.onGround = false;
         car.vel.y += GRAVITY * dt;
+      } else if (isSteepWall) {
+        // Strong tire downforce on curved ramps & walls (overcomes v^2/R centripetal lift)
+        const adhesion = 24.0 + Math.abs(forwardSpeed) * 2.4;
+        car.vel = subV3(car.vel, scaleV3(car.groundNormal, adhesion * dt));
+        // Subtle gravity pull along wall so climbing slowly still feels weighty
+        car.vel.y += GRAVITY * 0.4 * dt;
       } else {
-        // Gentle adhesive force toward surface normal + slight gravity on floor
-        car.vel = subV3(car.vel, scaleV3(car.groundNormal, 6.0 * dt));
+        // Flat floor & gentle ramps: full gravity keeps tires planted without bouncing
+        car.vel.y += GRAVITY * dt;
+        car.vel = subV3(car.vel, scaleV3(car.groundNormal, 8.0 * dt));
       }
 
       // Jump 1
@@ -468,9 +476,9 @@ function stepCarsOnly(
         car.onGround = false;
         car.hasDoubleJump = true;
         car.airTimeSinceJump = 0;
-        const jumpImpulse = 10.6;
+        const jumpImpulse = 9.4;
         car.vel = addV3(car.vel, scaleV3(car.groundNormal, jumpImpulse));
-        car.pos = addV3(car.pos, scaleV3(car.groundNormal, 0.12));
+        car.pos = addV3(car.pos, scaleV3(car.groundNormal, 0.14));
         events.push({ type: 'jump', carId: car.id, pos: { ...car.pos } });
       }
     } else {
@@ -479,35 +487,42 @@ function stepCarsOnly(
       car.airTimeSinceJump += dt;
       car.vel.y += GRAVITY * dt;
 
-      // Second Jump or Directional Air Dodge (Flip) within 1.35s window
+      // Second Jump or Directional Air Dodge (Front / Back / Sideways / Diagonal Flip) within 1.35s window
       if (justPressedJump && car.hasDoubleJump && car.airTimeSinceJump < 1.35) {
         car.hasDoubleJump = false;
 
-        // Determine dodge direction from pitch (W/S) & steer/yaw (A/D)
-        // Forward in Rocket League: pressing W (throttle > 0 or pitch < 0) flips forward!
+        // Determine dodge direction from W/S (throttle/pitch) & A/D/Q/E (steer/yaw/roll)
         const forwardIntent = input.throttle !== 0 ? input.throttle : -input.pitch;
-        const sideIntent = input.steer !== 0 ? input.steer : input.yaw;
+        const sideIntent =
+          input.steer !== 0
+            ? input.steer
+            : input.yaw !== 0
+              ? input.yaw
+              : -input.roll;
         const dodgeMag = Math.hypot(forwardIntent, sideIntent);
 
         if (dodgeMag > 0.25) {
-          // Execute Directional Dodge / Flip!
+          // Execute Directional Dodge / Flip (Straight, Sideways, or Diagonal)!
+          const isDiagonal = Math.abs(forwardIntent) > 0.25 && Math.abs(sideIntent) > 0.25;
+          const flipDuration = 0.42;
           car.isFlipping = true;
-          car.flipTimer = 0.52;
+          car.flipTimer = flipDuration;
 
           // Project car forward & left onto horizontal plane for clean RL dodge surge
-          const horizFwd = normV3({ x: forward.x, y: 0, z: forward.z }, v3(0, 0, 1));
-          const horizLeft = normV3({ x: left.x, y: 0, z: left.z }, v3(1, 0, 0));
+          const wallHoriz = normV3({ x: car.groundNormal.x, y: 0, z: car.groundNormal.z }, v3(0, 0, 1));
+          const horizFwd = normV3({ x: forward.x, y: 0, z: forward.z }, wallHoriz);
+          const horizLeft = normV3({ x: left.x, y: 0, z: left.z }, v3(horizFwd.z, 0, -horizFwd.x));
           const dodgeDir = normV3(
             addV3(scaleV3(horizFwd, forwardIntent), scaleV3(horizLeft, sideIntent)),
           );
 
-          // Cancel downward momentum for classic snappy RL flip!
-          if (car.vel.y < 0) car.vel.y *= 0.25;
-          car.vel.y += 2.6;
-          car.vel = addV3(car.vel, scaleV3(dodgeDir, 13.2));
+          // Rocket League snap: damp vertical climb/fall so dodge surges cleanly across the pitch
+          car.vel.y = clamp(car.vel.y * 0.2, -1.5, 2.2);
+          const dodgeSurge = isDiagonal ? 14.5 : 13.0;
+          car.vel = addV3(car.vel, scaleV3(dodgeDir, dodgeSurge));
 
           // Flip rotation axis in local car space:
-          // Forward flip rotates around local +X; Left flip rotates around local -Z
+          // Forward (+X), Back (-X), Left (-Z), Right (+Z), or 45-deg Diagonal!
           car.flipAxis = normV3({
             x: forwardIntent,
             y: 0,
@@ -516,7 +531,7 @@ function stepCarsOnly(
           events.push({ type: 'flip', carId: car.id, pos: { ...car.pos } });
         } else {
           // Neutral Double Jump
-          car.vel.y = Math.max(car.vel.y, 0) + 9.2;
+          car.vel.y = Math.max(car.vel.y, 0) + 8.6;
           events.push({ type: 'jump', carId: car.id, pos: { ...car.pos } });
         }
       }
@@ -524,17 +539,18 @@ function stepCarsOnly(
       // Air control / Dodge spin
       if (car.isFlipping) {
         car.flipTimer -= dt;
-        const spinStep = (Math.PI * 2 / 0.52) * dt;
+        const flipDuration = 0.42;
+        const spinStep = ((Math.PI * 2) / flipDuration) * dt;
         const flipDelta = quatFromAxisAngle(car.flipAxis, spinStep);
         car.quat = normQuat(mulQuat(car.quat, flipDelta));
         if (car.flipTimer <= 0) {
           car.isFlipping = false;
         }
-      } else {
-        // Manual 3D aerial pitch, yaw, roll
-        const pitchRate = -input.pitch * 3.2; // Nose down on W (pitch = -1 -> +angle around +X), nose up on S
-        const yawRate = input.yaw * 3.0;
-        const rollRate = input.roll * 4.2;
+      } else if (car.pos.y > CAR_RIDE_HEIGHT + 0.65 || !car.hasDoubleJump || car.airTimeSinceJump > 0.18) {
+        // Manual 3D aerial pitch, yaw, roll only when genuinely airborne (prevents nose-diving on tiny ground bumps)
+        const pitchRate = -input.pitch * 3.0;
+        const yawRate = input.yaw * 2.8;
+        const rollRate = input.roll * 4.0;
 
         if (Math.abs(pitchRate) > 1e-4) {
           car.quat = mulQuat(car.quat, quatFromAxisAngle(v3(1, 0, 0), pitchRate * dt));
@@ -546,6 +562,12 @@ function stepCarsOnly(
           car.quat = mulQuat(car.quat, quatFromAxisAngle(v3(0, 0, 1), rollRate * dt));
         }
         car.quat = normQuat(car.quat);
+      } else {
+        // Gentle upright stabilization when skimming low over turf/ramps without jumping
+        const currentUp = normV3(rotateVecByQuat(v3(0, 1, 0), car.quat));
+        const alignQ = quatFromUnitVectors(currentUp, v3(0, 1, 0));
+        const uprightQ = normQuat(mulQuat(alignQ, car.quat));
+        car.quat = slerpQuat(car.quat, uprightQ, clamp(10 * dt, 0, 1));
       }
     }
 
@@ -566,17 +588,23 @@ function stepCarsOnly(
       car.pos = addV3(car.pos, scaleV3(hit.normal, hit.penetration));
       const vn = dotV3(car.vel, hit.normal);
       if (vn < 0) {
-        // Check if landing smoothly on wheels or scraping wall
+        // Check if landing smoothly on wheels or driving onto curved ramp/wall
         const currentUp = rotateVecByQuat(v3(0, 1, 0), car.quat);
         const upDot = dotV3(currentUp, hit.normal);
-        if (hit.isFloorOrRamp && upDot > 0.35) {
-          // Snap onto surface
-          car.vel = subV3(car.vel, scaleV3(hit.normal, vn * 1.05));
+        if (hit.isFloorOrRamp && upDot > 0.18) {
+          // Snap smoothly onto surface without upward bounce
+          car.vel = subV3(car.vel, scaleV3(hit.normal, vn));
           car.onGround = true;
           car.groundNormal = { ...hit.normal };
+        } else if (hit.normal.y > 0.7 && Math.abs(vn) < 5.0) {
+          // Gentle upright recovery if touching flat floor at low vertical speed
+          car.vel = subV3(car.vel, scaleV3(hit.normal, vn));
+          car.onGround = true;
+          car.groundNormal = v3(0, 1, 0);
         } else {
-          // Bounce off wall / roof landing
-          car.vel = subV3(car.vel, scaleV3(hit.normal, vn * 1.28));
+          // Wall / ceiling / roof bounce (damped on ceiling so car drops cleanly)
+          const bounce = hit.normal.y < -0.5 ? 1.08 : 1.22;
+          car.vel = subV3(car.vel, scaleV3(hit.normal, vn * bounce));
           if (hit.normal.y > 0.7 && car.pos.y < 1.2) {
             car.onGround = true;
             car.groundNormal = v3(0, 1, 0);
@@ -587,11 +615,18 @@ function stepCarsOnly(
         car.groundNormal = { ...hit.normal };
       }
     } else if (car.onGround) {
-      // Probe slightly below wheels to see if car drove off a ramp or wall edge
-      const probePos = subV3(car.pos, scaleV3(car.groundNormal, 0.25));
+      // Probe below wheels (generous distance so curved ramps & wall transitions stay glued!)
+      const probePos = subV3(car.pos, scaleV3(car.groundNormal, 0.75));
       const probe = resolveArenaSphere(probePos, CAR_RIDE_HEIGHT);
       if (probe.hit && probe.isFloorOrRamp) {
         car.groundNormal = { ...probe.normal };
+        // Pull gently onto curved surface to avoid micro-hops
+        if (probe.penetration < 0.72) {
+          const gap = Math.max(0, 0.75 - probe.penetration);
+          if (gap > 0.02 && gap < 0.45) {
+            car.pos = subV3(car.pos, scaleV3(probe.normal, gap * 0.5));
+          }
+        }
       } else {
         car.onGround = false;
       }
