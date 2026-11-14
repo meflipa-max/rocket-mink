@@ -4,11 +4,15 @@ export type MatchMode = '1v1' | '2v2' | '3v3' | 'freeplay';
 
 export type ArenaId = 'dfh_night' | 'neo_tokyo' | 'mannfield_day';
 
-export type CarBodyStyle = 'octane' | 'dominus';
+export type CarBodyStyle = 'octane' | 'dominus' | 'fennec';
 
-export type DecalStyle = 'stripes' | 'flames' | 'clean';
+export type DecalStyle = 'stripes' | 'flames' | 'cyber' | 'wings' | 'clean';
 
-export type WheelStyle = 'sport' | 'aero';
+export type WheelStyle = 'sport' | 'aero' | 'turbine' | 'cyber';
+
+export type PaintFinish = 'gloss' | 'matte' | 'metallic' | 'anodized';
+
+export type TopperStyle = 'none' | 'halo' | 'crown' | 'fin';
 
 export interface CarCustomization {
   body: CarBodyStyle;
@@ -17,6 +21,9 @@ export interface CarCustomization {
   boostColor: string;
   decal: DecalStyle;
   wheelStyle: WheelStyle;
+  paintFinish?: PaintFinish;
+  topper?: TopperStyle;
+  underglow?: boolean;
 }
 
 export interface Vec3 {
@@ -166,6 +173,9 @@ export const DEFAULT_CUSTOMIZATION_BLUE: CarCustomization = {
   boostColor: '#38bdf8',
   decal: 'stripes',
   wheelStyle: 'sport',
+  paintFinish: 'metallic',
+  topper: 'none',
+  underglow: false,
 };
 
 export const DEFAULT_CUSTOMIZATION_ORANGE: CarCustomization = {
@@ -175,4 +185,7 @@ export const DEFAULT_CUSTOMIZATION_ORANGE: CarCustomization = {
   boostColor: '#f97316',
   decal: 'flames',
   wheelStyle: 'sport',
+  paintFinish: 'metallic',
+  topper: 'none',
+  underglow: false,
 };

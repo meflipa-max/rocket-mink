@@ -48,6 +48,7 @@ export const GRAVITY = -15.2; // Rocket League-style floaty aerial gravity
 export const MAX_CAR_SPEED = 21.0; // Normal max throttle speed (m/s, ~75 km/h)
 export const SUPERSONIC_THRESHOLD = 26.5; // Supersonic speed threshold (m/s, ~95 km/h)
 export const MAX_BOOST_SPEED = 31.0; // Max boost speed (m/s, ~112 km/h)
+export const MAX_BALL_SPEED = 42.0; // Controlled max ball speed (m/s, ~151 km/h)
 export const MATCH_DURATION_SECONDS = 300; // 5:00 standard match
 
 export type SimulationEvent =
@@ -219,7 +220,7 @@ export function stepSimulation(
     if (nextCeil !== prevCeil && nextCeil > 0) {
       events.push({ type: 'countdown', secondsLeft: nextCeil });
     }
-    if (state.phaseTimer <= 0) {
+    if (authoritative && state.phaseTimer <= 0) {
       state.phase = 'active';
       events.push({ type: 'countdown', secondsLeft: 0 });
     }
@@ -231,7 +232,7 @@ export function stepSimulation(
   if (state.phase === 'goal_scored') {
     state.phaseTimer -= stepDt;
     stepCarsOnly(state, inputs, stepDt, events);
-    if (state.phaseTimer <= 0) {
+    if (authoritative && state.phaseTimer <= 0) {
       if (state.isOvertime) {
         state.phase = 'ended';
         state.winner = state.scoreBlue > state.scoreOrange ? 'blue' : 'orange';
@@ -243,11 +244,11 @@ export function stepSimulation(
     return events;
   }
 
-  // Active match clock
-  if (state.mode !== 'freeplay') {
+  // Active match clock (host-authoritative only so guest prediction never runs a separate match clock)
+  if (authoritative && state.mode !== 'freeplay') {
     if (!state.isOvertime) {
       state.clockSeconds = Math.max(0, state.clockSeconds - stepDt);
-      if (authoritative && state.clockSeconds <= 0) {
+      if (state.clockSeconds <= 0) {
         // Rocket League rule: match ends on 0:00 if ball touches the ground (or immediately if grounded/decided)
         const ballOnGround = state.ball.pos.y <= BALL_RADIUS + 0.35 && state.ball.vel.y <= 0.5;
         if (ballOnGround) {
@@ -471,12 +472,12 @@ function stepCarsOnly(
         car.vel = subV3(car.vel, scaleV3(car.groundNormal, 8.0 * dt));
       }
 
-      // Jump 1
+      // Jump 1 (snappy initial pop + variable hold extension for first 0.20s)
       if (justPressedJump) {
         car.onGround = false;
         car.hasDoubleJump = true;
-        car.airTimeSinceJump = 0;
-        const jumpImpulse = 9.4;
+        car.airTimeSinceJump = 0.001;
+        const jumpImpulse = 8.4;
         car.vel = addV3(car.vel, scaleV3(car.groundNormal, jumpImpulse));
         car.pos = addV3(car.pos, scaleV3(car.groundNormal, 0.14));
         events.push({ type: 'jump', carId: car.id, pos: { ...car.pos } });
@@ -484,12 +485,35 @@ function stepCarsOnly(
     } else {
       // Airborne state
       car.steerAngle = lerp(car.steerAngle, 0, clamp(10 * dt, 0, 1));
-      car.airTimeSinceJump += dt;
-      car.vel.y += GRAVITY * dt;
+      const hasUsedFirstJump = car.airTimeSinceJump > 0;
+      if (hasUsedFirstJump) {
+        car.airTimeSinceJump += dt;
+      }
 
-      // Second Jump or Directional Air Dodge (Front / Back / Sideways / Diagonal Flip) within 1.35s window
-      if (justPressedJump && car.hasDoubleJump && car.airTimeSinceJump < 1.35) {
+      // RL variable jump height: holding Space up to 0.20s after Jump 1 extends upward lift
+      if (
+        hasUsedFirstJump &&
+        input.jump &&
+        car.hasDoubleJump &&
+        car.airTimeSinceJump < 0.21 &&
+        !car.isFlipping
+      ) {
+        car.vel = addV3(car.vel, scaleV3(car.groundNormal, 18.5 * dt));
+      }
+
+      // RL dodge vertical hover: during the first 0.18s of a flip, gravity is heavily damped so the car glides level
+      const flipElapsed = car.isFlipping ? 0.38 - car.flipTimer : 99;
+      if (car.isFlipping && flipElapsed < 0.18) {
+        car.vel.y += GRAVITY * 0.12 * dt;
+      } else {
+        car.vel.y += GRAVITY * dt;
+      }
+
+      // Second Jump or Directional Air Dodge within 1.45s after jump 1 (unlimited timer if dropped off wall/ceiling!)
+      const canFlipNow = car.hasDoubleJump && (!hasUsedFirstJump || car.airTimeSinceJump < 1.45);
+      if (justPressedJump && canFlipNow) {
         car.hasDoubleJump = false;
+        if (!hasUsedFirstJump) car.airTimeSinceJump = 0.001;
 
         // Determine dodge direction from W/S (throttle/pitch) & A/D/Q/E (steer/yaw/roll)
         const forwardIntent = input.throttle !== 0 ? input.throttle : -input.pitch;
@@ -502,9 +526,9 @@ function stepCarsOnly(
         const dodgeMag = Math.hypot(forwardIntent, sideIntent);
 
         if (dodgeMag > 0.25) {
-          // Execute Directional Dodge / Flip (Straight, Sideways, or Diagonal)!
+          // Execute Rocket League Directional Dodge / Flip (Straight, Sideways, or Diagonal Speed-Flip!)
           const isDiagonal = Math.abs(forwardIntent) > 0.25 && Math.abs(sideIntent) > 0.25;
-          const flipDuration = 0.42;
+          const flipDuration = 0.38;
           car.isFlipping = true;
           car.flipTimer = flipDuration;
 
@@ -516,13 +540,12 @@ function stepCarsOnly(
             addV3(scaleV3(horizFwd, forwardIntent), scaleV3(horizLeft, sideIntent)),
           );
 
-          // Rocket League snap: damp vertical climb/fall so dodge surges cleanly across the pitch
-          car.vel.y = clamp(car.vel.y * 0.2, -1.5, 2.2);
-          const dodgeSurge = isDiagonal ? 14.5 : 13.0;
+          // Rocket League snap: flatten vertical drop cleanly when initiating dodge
+          car.vel.y = clamp(car.vel.y * 0.15, -0.6, 1.4);
+          const dodgeSurge = isDiagonal ? 13.8 : 12.2;
           car.vel = addV3(car.vel, scaleV3(dodgeDir, dodgeSurge));
 
-          // Flip rotation axis in local car space:
-          // Forward (+X), Back (-X), Left (-Z), Right (+Z), or 45-deg Diagonal!
+          // Flip rotation axis in local car space: Forward (+X), Back (-X), Left (-Z), Right (+Z), Diagonal
           car.flipAxis = normV3({
             x: forwardIntent,
             y: 0,
@@ -530,27 +553,48 @@ function stepCarsOnly(
           });
           events.push({ type: 'flip', carId: car.id, pos: { ...car.pos } });
         } else {
-          // Neutral Double Jump
-          car.vel.y = Math.max(car.vel.y, 0) + 8.6;
+          // Neutral Double Jump (pure vertical pop)
+          car.vel.y = Math.max(car.vel.y * 0.35, 0) + 8.8;
           events.push({ type: 'jump', carId: car.id, pos: { ...car.pos } });
         }
       }
 
-      // Air control / Dodge spin
+      // Air control / Barrel Roll (Avvitamento) & Flip Spin
       if (car.isFlipping) {
         car.flipTimer -= dt;
-        const flipDuration = 0.42;
-        const spinStep = ((Math.PI * 2) / flipDuration) * dt;
+        const flipDuration = 0.38;
+        // Rocket League Flip Cancel: pulling opposite pitch slows pitch rotation while preserving lateral barrel roll
+        const pitchCancelling =
+          Math.abs(car.flipAxis.x) > 0.2 &&
+          input.pitch !== 0 &&
+          Math.sign(input.pitch) === Math.sign(car.flipAxis.x);
+        const spinMult = pitchCancelling ? 0.32 : 1.0;
+        const spinStep = ((Math.PI * 2) / flipDuration) * spinMult * dt;
         const flipDelta = quatFromAxisAngle(car.flipAxis, spinStep);
         car.quat = normQuat(mulQuat(car.quat, flipDelta));
+
+        if (Math.abs(input.roll) > 0.05) {
+          car.quat = normQuat(
+            mulQuat(car.quat, quatFromAxisAngle(v3(0, 0, 1), input.roll * 2.2 * dt)),
+          );
+        }
         if (car.flipTimer <= 0) {
           car.isFlipping = false;
         }
-      } else if (car.pos.y > CAR_RIDE_HEIGHT + 0.65 || !car.hasDoubleJump || car.airTimeSinceJump > 0.18) {
-        // Manual 3D aerial pitch, yaw, roll only when genuinely airborne (prevents nose-diving on tiny ground bumps)
-        const pitchRate = -input.pitch * 3.0;
-        const yawRate = input.yaw * 2.8;
-        const rollRate = input.roll * 4.0;
+      } else if (
+        car.pos.y > CAR_RIDE_HEIGHT + 0.55 ||
+        !car.hasDoubleJump ||
+        car.airTimeSinceJump > 0.14 ||
+        Math.abs(input.roll) > 0.05
+      ) {
+        // Rocket League Aerial Control:
+        // - Q/E = Directional Air Roll (Avvitamento)
+        // - Holding Handbrake (X/K/Ctrl) + A/D = Free Air Roll (stile RL!)
+        const pitchRate = -input.pitch * 4.2;
+        const freeAirRoll = input.handbrake ? -input.yaw : 0;
+        const activeRoll = input.roll !== 0 ? input.roll : freeAirRoll;
+        const yawRate = input.handbrake ? 0 : input.yaw * 3.8;
+        const rollRate = activeRoll * 6.4;
 
         if (Math.abs(pitchRate) > 1e-4) {
           car.quat = mulQuat(car.quat, quatFromAxisAngle(v3(1, 0, 0), pitchRate * dt));
@@ -656,16 +700,16 @@ function stepBall(
 ): void {
   const ball = state.ball;
 
-  // Gravity & air drag
-  ball.vel.y += GRAVITY * dt;
-  const airDrag = 1 - 0.03 * dt;
+  // Gravity, air drag & natural deceleration
+  ball.vel.y += GRAVITY * 0.92 * dt;
+  const airDrag = 1 - 0.14 * dt;
   ball.vel = scaleV3(ball.vel, airDrag);
-  ball.angVel = scaleV3(ball.angVel, 1 - 0.15 * dt);
+  ball.angVel = scaleV3(ball.angVel, 1 - 0.25 * dt);
 
-  // Clamp max ball speed
+  // Clamp max ball speed to readable Rocket League-like pace
   const speed = lenV3(ball.vel);
-  if (speed > 62) {
-    ball.vel = scaleV3(ball.vel, 62 / speed);
+  if (speed > MAX_BALL_SPEED) {
+    ball.vel = scaleV3(ball.vel, MAX_BALL_SPEED / speed);
   }
 
   // Integrate ball pos
@@ -677,13 +721,14 @@ function stepBall(
     ball.pos = addV3(ball.pos, scaleV3(hit.normal, hit.penetration));
     const vn = dotV3(ball.vel, hit.normal);
     if (vn < 0) {
-      const restitution = hit.normal.y > 0.8 ? 0.62 : 0.72;
+      const restitution = hit.normal.y > 0.8 ? 0.56 : 0.64;
       const bounceSpeed = -vn;
       ball.vel = subV3(ball.vel, scaleV3(hit.normal, (1 + restitution) * vn));
 
       // Rolling friction + spin coupling
       const tangentVel = subV3(ball.vel, scaleV3(hit.normal, dotV3(ball.vel, hit.normal)));
-      ball.vel = subV3(ball.vel, scaleV3(tangentVel, 0.04));
+      const rollDrag = hit.normal.y > 0.75 ? 0.08 : 0.05;
+      ball.vel = subV3(ball.vel, scaleV3(tangentVel, rollDrag));
       const spinAxis = crossV3(hit.normal, tangentVel);
       ball.angVel = scaleV3(spinAxis, 1 / ball.radius);
 
@@ -735,20 +780,25 @@ function resolveCarBallCollisions(
 
     if (vn < 0) {
       const carSpeed = lenV3(car.vel);
-      const powerBoost = car.isFlipping ? 1.38 : 1.12;
-      const restitution = 0.72;
+      const powerBoost = car.isFlipping ? 1.24 : 0.92;
+      const restitution = 0.50;
       const impulseMag = -(1 + restitution) * vn * powerBoost;
 
       ball.vel = addV3(ball.vel, scaleV3(worldNormal, impulseMag));
-      // Add forward car momentum + natural Rocket League upward pop
-      ball.vel = addV3(ball.vel, scaleV3(car.vel, 0.25));
+      // Add controlled forward car momentum + natural upward pop
+      ball.vel = addV3(ball.vel, scaleV3(car.vel, 0.18));
       if (worldNormal.y > -0.2 && carSpeed > 6) {
-        ball.vel.y += clamp(carSpeed * 0.14, 1.5, 5.2);
+        ball.vel.y += clamp(carSpeed * 0.11, 1.1, 3.8);
+      }
+
+      const postHitSpeed = lenV3(ball.vel);
+      if (postHitSpeed > MAX_BALL_SPEED) {
+        ball.vel = scaleV3(ball.vel, MAX_BALL_SPEED / postHitSpeed);
       }
 
       // Spin impulse from tangential hit
       const contactTangent = subV3(relVel, scaleV3(worldNormal, vn));
-      ball.angVel = addV3(ball.angVel, scaleV3(crossV3(worldNormal, contactTangent), 0.22));
+      ball.angVel = addV3(ball.angVel, scaleV3(crossV3(worldNormal, contactTangent), 0.2));
 
       // Mild recoil on car
       car.vel = subV3(car.vel, scaleV3(worldNormal, impulseMag * 0.12));

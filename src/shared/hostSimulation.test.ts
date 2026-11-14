@@ -36,3 +36,19 @@ test('host allows hot-joining player to replace a bot and receive inputs', () =>
   host.demoteToBot('son-1');
   assert.equal(sonCar.isBot, true);
 });
+
+test('host decays stale remote steering input after 1.25s without packets so cars stop spinning in circles', () => {
+  const host = new HostSimulation('1v1', 'dfh_night', [
+    { id: 'host-1', name: 'Papa', team: 'blue' },
+    { id: 'son-1', name: 'Figlio', team: 'orange' },
+  ]);
+  host.state.phase = 'active';
+  host.setInput('son-1', { ...NEUTRAL_INPUT, throttle: 1, steer: 1 });
+  // Advance 150 frames (2.5s = 1.25s timeout + 1.25s coast) with no fresh input packets
+  for (let i = 0; i < 150; i++) host.step(1 / 60);
+  const sonCar = host.state.cars.find((c) => c.id === 'son-1')!;
+  const speedAfterDecay = Math.hypot(sonCar.vel.x, sonCar.vel.z);
+  assert.ok(Math.abs(sonCar.steerAngle) < 0.05, `Steering should straighten out, got ${sonCar.steerAngle}`);
+  assert.ok(speedAfterDecay < 10, `Car should have coasted down after input timeout, got ${speedAfterDecay}`);
+});
+

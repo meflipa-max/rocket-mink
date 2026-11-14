@@ -44,3 +44,40 @@ export function pickBalancedTeam(players: ReadonlyArray<{ team: Team }>): Team {
   }
   return blue <= orange ? 'blue' : 'orange';
 }
+
+export const PEER_HEARTBEAT_TIMEOUT_MS = 8500;
+
+/** Finds non-host players whose heartbeat/traffic timestamp has expired. */
+export function findStalePlayerIds(
+  players: ReadonlyArray<{ id: string; isHost?: boolean }>,
+  lastSeenById: ReadonlyMap<string, number>,
+  nowMs: number,
+  timeoutMs = PEER_HEARTBEAT_TIMEOUT_MS,
+): string[] {
+  const stale: string[] = [];
+  for (const player of players) {
+    if (player.isHost) continue;
+    const seenAt = lastSeenById.get(player.id);
+    if (seenAt === undefined || nowMs - seenAt > timeoutMs) {
+      stale.push(player.id);
+    }
+  }
+  return stale;
+}
+
+/**
+ * Checks whether a join/reconnect request can enter the room.
+ * Existing players in the room are always allowed to reconnect (even at maxPlayers),
+ * and any stale/timed-out slots are discounted before rejecting as full.
+ */
+export function canAcceptRoomRequest(
+  players: ReadonlyArray<{ id: string; isHost?: boolean }>,
+  maxPlayers: number,
+  requesterId: string,
+  staleIds: ReadonlyArray<string>,
+): boolean {
+  if (players.some((p) => p.id === requesterId)) return true;
+  const staleSet = new Set(staleIds);
+  const activeCount = players.filter((p) => !staleSet.has(p.id)).length;
+  return activeCount < maxPlayers;
+}

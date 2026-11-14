@@ -131,6 +131,7 @@ export class GameViewportController {
 
   private hudAccum = 0;
   private inputSendAccum = 0;
+  private lastNetPacketMs = 0;
   private resizeObserver: ResizeObserver;
 
   constructor(container: HTMLElement) {
@@ -239,6 +240,9 @@ export class GameViewportController {
     this.scene.add(this.garageRig.contactShadow);
     this.garageRig.group.visible = this.mode === 'garage';
     this.garageRig.contactShadow.visible = this.mode === 'garage';
+    for (const cone of this.garageRig.flameCones) {
+      cone.visible = this.mode === 'garage';
+    }
   }
 
   public setMode(mode: ViewportMode): void {
@@ -316,6 +320,7 @@ export class GameViewportController {
   public startMultiplayerMatch(snapshot: GameStateSnapshot, localId: string): void {
     this.isMultiplayer = true;
     this.localPlayerId = localId;
+    this.lastNetPacketMs = performance.now();
     this.activeState = structuredClone(snapshot);
     this.targetNetState = structuredClone(snapshot);
     this.stadium.setArenaTheme(snapshot.arenaId);
@@ -326,6 +331,7 @@ export class GameViewportController {
   }
 
   public applyNetworkSnapshot(snapshot: GameStateSnapshot): void {
+    this.lastNetPacketMs = performance.now();
     this.targetNetState = snapshot;
     if (!this.activeState) {
       this.activeState = structuredClone(snapshot);
@@ -606,11 +612,16 @@ export class GameViewportController {
 
     if (this.mode === 'garage' && this.garageRig) {
       const angle = this.elapsed * 0.45;
-      this.camera.position.set(3.5 + Math.cos(angle) * 6.5, 2.35, Math.sin(angle) * 6.5);
-      this.camera.lookAt(1.3, 0.85, 0);
+      this.camera.position.set(3.5 + Math.cos(angle) * 6.2, 2.3, Math.sin(angle) * 6.2);
+      this.camera.lookAt(1.3, 0.78, 0);
       this.camera.fov = 50;
       this.camera.updateProjectionMatrix();
       this.garageRig.group.rotation.y = this.elapsed * 0.25;
+      const flamePulse = 0.6 + Math.sin(this.elapsed * 14) * 0.2;
+      for (const cone of this.garageRig.flameCones) {
+        cone.visible = true;
+        cone.scale.set(0.85, 0.85, flamePulse);
+      }
       this.stadium.update(this.elapsed, []);
       this.particles.update(dt);
       return;
@@ -622,7 +633,7 @@ export class GameViewportController {
 
     if (this.mode === 'playing' && !this.paused) {
       if (this.isMultiplayer) {
-        // Stream local inputs to host at up to 60Hz (and immediately on any discrete button/axis change)
+        // Stream local inputs immediately on change, at 45Hz while active, and >=10Hz keepalive when idle
         this.inputSendAccum += dt;
         const discreteChanged =
           input.jump !== this.prevInput.jump ||
@@ -631,14 +642,26 @@ export class GameViewportController {
           input.throttle !== this.prevInput.throttle ||
           input.steer !== this.prevInput.steer ||
           input.roll !== this.prevInput.roll;
-        if (discreteChanged || this.inputSendAccum >= 1 / 60) {
+        const isNonNeutral =
+          input.throttle !== 0 ||
+          input.steer !== 0 ||
+          input.roll !== 0 ||
+          input.boost ||
+          input.handbrake ||
+          input.jump;
+        if (
+          discreteChanged ||
+          (isNonNeutral && this.inputSendAccum >= 1 / 45) ||
+          this.inputSendAccum >= 1 / 10
+        ) {
           this.inputSendAccum = 0;
           this.onSendInput?.(input);
         }
         this.prevInput = input;
 
-        // 60fps local prediction & ball/car dead-reckoning between host snapshots (non-authoritative)
-        if (this.activeState.phase === 'active') {
+        // 60fps local prediction only while host packets are fresh (<1.2s); freeze on stall so timelines never diverge
+        const netFresh = performance.now() - this.lastNetPacketMs < 1200;
+        if (this.activeState.phase === 'active' && netFresh) {
           const predEvents = stepSimulation(
             this.activeState,
             { [this.localPlayerId]: input },

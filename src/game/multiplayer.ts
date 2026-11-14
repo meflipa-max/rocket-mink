@@ -7,6 +7,7 @@ import {
   type RosterEntry,
 } from '../shared/netSnapshot';
 import type {
+  CarCustomization,
   GameStateSnapshot,
   LobbyPlayer,
   PlayerInput,
@@ -19,8 +20,11 @@ import {
 } from '../shared/types';
 import type { PlayerSeed } from '../shared/physics';
 import {
+  canAcceptRoomRequest,
+  findStalePlayerIds,
   generateRoomCode,
   normalizeRoomCodeInput,
+  PEER_HEARTBEAT_TIMEOUT_MS,
   pickBalancedTeam,
 } from '../shared/roomHelpers';
 
@@ -71,7 +75,9 @@ export class MultiplayerClient {
   private found = new Map<string, RoomSummary>();
   private simulation: HostSimulation | null = null;
   private timer?: ReturnType<typeof setInterval>;
+  private heartbeatTimer?: ReturnType<typeof setInterval>;
   private pendingJoin: any = null;
+  private pendingProfile: { playerName: string; customization?: CarCustomization } | null = null;
   private queuedJoin: any = null;
   private closed = false;
   private joinTimeout?: ReturnType<typeof setTimeout>;
@@ -81,7 +87,15 @@ export class MultiplayerClient {
   private inputSeq = 0;
   private lastRecvStateSeq = 0;
   private lastPeerInputSeq = new Map<string, number>();
+  private lastPeerSeen = new Map<string, number>();
+  private lastHostPacketAt = 0;
   private wireTemplate: GameStateSnapshot | null = null;
+
+  private readonly handlePageHide = () => {
+    if (this.room && this.hostId && this.hostId !== this.id) {
+      this.sendSignal('leave', { code: this.room.code }, this.hostId);
+    }
+  };
 
   constructor() {
     this.signal = this.supabase.channel('rocket-mink:signal:v1', {
@@ -106,6 +120,9 @@ export class MultiplayerClient {
         this.fire(wasConnected ? 'disconnect' : 'connect_error');
       }
     });
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pagehide', this.handlePageHide);
+    }
   }
 
   on(event: string, fn: (value?: any) => void) {
@@ -197,8 +214,9 @@ export class MultiplayerClient {
       if (!payload || payload.from === this.id) return;
       if (payload.to && payload.to !== this.id) return;
       if (this.hostId === this.id) {
-        if (payload.event === 'join') {
+        if (payload.event === 'join' || payload.event === 'relay:attach') {
           this.relayPeers.add(payload.from);
+          this.lastPeerSeen.set(payload.from, performance.now());
           const existingPeer = this.peers.get(payload.from);
           if (existingPeer) {
             this.peers.delete(payload.from);
@@ -254,6 +272,73 @@ export class MultiplayerClient {
     });
   }
 
+  private switchToRelayMidMatch(code: string) {
+    if (this.closed || this.usingRelay || !this.room || this.hostId === this.id) return;
+    this.usingRelay = true;
+    const peers = [...this.peers.values()];
+    this.peers.clear();
+    peers.forEach((p) => p.pc.close());
+
+    const profile = this.pendingProfile || { playerName: 'Pilota' };
+    this.openRoomChannel(code, () => {
+      if (this.room && this.usingRelay && this.hostId !== this.id) {
+        this.sendRoomRelay('relay:attach', profile, this.hostId || undefined);
+      }
+    });
+  }
+
+  private sweepStalePeers(timeoutMs = PEER_HEARTBEAT_TIMEOUT_MS) {
+    if (!this.room || this.hostId !== this.id) return;
+    const staleIds = findStalePlayerIds(
+      this.room.players,
+      this.lastPeerSeen,
+      performance.now(),
+      timeoutMs,
+    );
+    for (const staleId of staleIds) {
+      this.peerLeft(staleId);
+    }
+  }
+
+  private startHeartbeat() {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    if (this.hostId === this.id) {
+      for (const p of this.room?.players ?? []) {
+        if (!p.isHost) this.lastPeerSeen.set(p.id, performance.now());
+      }
+    } else {
+      this.lastHostPacketAt = performance.now();
+    }
+
+    this.heartbeatTimer = setInterval(() => {
+      if (this.closed || !this.room) return;
+      const now = performance.now();
+      if (this.hostId === this.id) {
+        this.sweepStalePeers(PEER_HEARTBEAT_TIMEOUT_MS);
+        return;
+      }
+
+      if (this.hostId) {
+        this.sendPeer(this.hostId, 'ping', { t: Date.now() }, true);
+        const silentMs = now - this.lastHostPacketAt;
+        if (silentMs > 2500 && !this.usingRelay) {
+          this.switchToRelayMidMatch(this.room.code);
+        } else if (silentMs > 4500 && this.usingRelay && this.relayReady) {
+          this.sendRoomRelay('relay:attach', this.pendingProfile || {}, this.hostId);
+        } else if (silentMs > 12500) {
+          this.peerLeft(this.hostId);
+        }
+      }
+    }, 1500);
+  }
+
+  private stopHeartbeat() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
+  }
+
   private newPeer(id: string): Peer {
     const oldPeer = this.peers.get(id);
     if (oldPeer) {
@@ -279,11 +364,34 @@ export class MultiplayerClient {
       }
     };
     peer.pc.onconnectionstatechange = () => {
-      if (peer.pc.connectionState === 'failed' || peer.pc.connectionState === 'closed') {
-        if (this.pendingJoin && this.hostId !== this.id) {
-          this.activateRelayFallback(this.pendingJoin.code);
+      if (this.peers.get(id) !== peer) return;
+      const state = peer.pc.connectionState;
+      if (state === 'disconnected' && this.hostId !== this.id && this.room && !this.usingRelay) {
+        setTimeout(() => {
+          if (
+            this.peers.get(id) === peer &&
+            peer.pc.connectionState === 'disconnected' &&
+            !this.usingRelay &&
+            this.room
+          ) {
+            this.switchToRelayMidMatch(this.room.code);
+          }
+        }, 1200);
+        return;
+      }
+      if (state === 'failed' || state === 'closed') {
+        if (this.hostId !== this.id) {
+          if (this.pendingJoin) {
+            this.activateRelayFallback(this.pendingJoin.code);
+          } else if (this.room && !this.usingRelay) {
+            this.switchToRelayMidMatch(this.room.code);
+          } else {
+            this.peerLeft(id);
+          }
         } else {
-          this.peerLeft(id);
+          // On host, close broken P2P handle cleanly; leave signal or heartbeat timeout will evict player if they don't switch to Relay
+          this.peers.delete(id);
+          peer.pc.close();
         }
       }
     };
@@ -316,8 +424,16 @@ export class MultiplayerClient {
       }
     };
     channel.onclose = () => {
-      if (this.peers.get(id) === peer) {
-        this.peerLeft(id);
+      if (this.peers.get(id) !== peer) return;
+      if (this.hostId !== this.id) {
+        if (this.room && !this.usingRelay) {
+          this.switchToRelayMidMatch(this.room.code);
+        } else {
+          this.peerLeft(id);
+        }
+      } else {
+        this.peers.delete(id);
+        peer.pc.close();
       }
     };
   }
@@ -326,7 +442,10 @@ export class MultiplayerClient {
     const wasWebRtc = this.peers.delete(id);
     const wasRelay = this.relayPeers.delete(id);
     this.lastPeerInputSeq.delete(id);
-    if (!wasWebRtc && !wasRelay) return;
+    this.lastPeerSeen.delete(id);
+    const inRoom =
+      this.hostId === this.id && !!this.room && this.room.players.some((p) => p.id === id);
+    if (!wasWebRtc && !wasRelay && !inRoom) return;
 
     if (this.hostId === this.id && this.room) {
       this.room.players = this.room.players.filter((p) => p.id !== id);
@@ -356,15 +475,29 @@ export class MultiplayerClient {
         return;
       }
       if (
+        s.kind === 'leave' &&
+        this.hostId === this.id &&
+        this.room &&
+        (!s.data?.code || s.data.code === this.room.code)
+      ) {
+        this.peerLeft(s.from);
+        return;
+      }
+      if (
         s.kind === 'request' &&
         this.hostId === this.id &&
         this.room &&
         this.room.code === s.data?.code
       ) {
-        if (this.room.players.length >= this.room.maxPlayers) {
+        this.sweepStalePeers(PEER_HEARTBEAT_TIMEOUT_MS);
+        if (!canAcceptRoomRequest(this.room.players, this.room.maxPlayers, s.from, [])) {
+          this.sweepStalePeers(3500);
+        }
+        if (!canAcceptRoomRequest(this.room.players, this.room.maxPlayers, s.from, [])) {
           this.sendSignal('reject', 'La stanza è al completo.', s.from);
           return;
         }
+        this.lastPeerSeen.set(s.from, performance.now());
         const peer = this.newPeer(s.from);
         this.bindChannel(s.from, peer, peer.pc.createDataChannel('game'));
         this.bindStateChannel(
@@ -451,14 +584,34 @@ export class MultiplayerClient {
 
   private handleJoin(id: string, payload: any) {
     if (!this.room) return;
-    if (this.room.players.some((p) => p.id === id)) {
+    this.sweepStalePeers(PEER_HEARTBEAT_TIMEOUT_MS);
+    if (!canAcceptRoomRequest(this.room.players, this.room.maxPlayers, id, [])) {
+      this.sweepStalePeers(3500);
+    }
+
+    const existing = this.room.players.find((p) => p.id === id);
+    if (existing) {
+      this.lastPeerSeen.set(id, performance.now());
+      if (payload?.playerName) {
+        existing.name = String(payload.playerName).slice(0, 18);
+      }
+      if (payload?.customization) {
+        existing.customization = payload.customization;
+      }
       this.sendPeer(id, 'room:joined', this.room);
       if (this.room.inProgress && this.simulation) {
+        const car = this.simulation.state.cars.find((c) => c.id === id);
+        if (car) {
+          car.name = existing.name;
+          car.isBot = false;
+          car.customization = existing.customization;
+        }
+        this.broadcastRoster(this.simulation.state);
         this.sendPeer(id, 'match:started', this.simulation.state);
       }
       return;
     }
-    if (this.room.players.length >= this.room.maxPlayers) {
+    if (!canAcceptRoomRequest(this.room.players, this.room.maxPlayers, id, [])) {
       this.sendPeer(id, 'room:error', 'La stanza è al completo.');
       const p = this.peers.get(id);
       if (p) {
@@ -469,6 +622,7 @@ export class MultiplayerClient {
       return;
     }
 
+    this.lastPeerSeen.set(id, performance.now());
     const team = pickBalancedTeam(this.room.players);
     const player: LobbyPlayer = {
       id,
@@ -530,6 +684,8 @@ export class MultiplayerClient {
   private onPeerMessage(id: string, msg: Message) {
     if (this.hostId !== this.id) {
       if (this.hostId && id !== this.hostId) return;
+      this.lastHostPacketAt = performance.now();
+      if (msg.event === 'pong') return;
       if (msg.event === 'room:joined') {
         this.clearJoinTimers();
         this.pendingJoin = null;
@@ -537,6 +693,7 @@ export class MultiplayerClient {
         if (this.room?.hostId) {
           this.hostId = this.room.hostId;
         }
+        this.startHeartbeat();
       }
       if (msg.event === 'room:error') {
         this.leave();
@@ -575,6 +732,12 @@ export class MultiplayerClient {
       return;
     }
     if (!this.room) return;
+    this.lastPeerSeen.set(id, performance.now());
+    if (msg.event === 'ping') {
+      this.sendPeer(id, 'pong', { t: msg.payload?.t ?? Date.now() }, true);
+      return;
+    }
+    if (msg.event === 'pong') return;
     if (msg.event === 'join') {
       this.handleJoin(id, msg.payload);
       return;
@@ -665,19 +828,37 @@ export class MultiplayerClient {
     this.broadcast('match:started', this.simulation.state);
     this.update();
     let last = performance.now();
+    let accum = 0;
     let ticks = 0;
+    let lastWebRtcTick = 0;
+    let lastRelayTick = 0;
+    const FIXED_DT = 1 / 60;
     this.timer = setInterval(() => {
       if (!this.simulation) return;
       const now = performance.now();
-      const events = this.simulation.step((now - last) / 1000);
+      const frameDt = Math.min(Math.max((now - last) / 1000, 0), 0.25);
       last = now;
-      if (events.length) this.broadcast('game:events', events);
-      ticks += 1;
-      const sendWebRtc = ticks % 2 === 0; // 30Hz over unreliable WebRTC DataChannel
-      const sendRelay = ticks % 3 === 0 && this.relayPeers.size > 0; // 20Hz compact over Supabase Relay
+      accum += frameDt;
+
+      let steps = 0;
+      while (accum >= FIXED_DT && steps < 4) {
+        const events = this.simulation.step(FIXED_DT);
+        if (events.length) this.broadcast('game:events', events);
+        accum -= FIXED_DT;
+        ticks += 1;
+        steps += 1;
+      }
+      if (steps === 0) return;
+
+      const sendWebRtc = ticks - lastWebRtcTick >= 2; // 30Hz over unreliable WebRTC DataChannel
+      const sendRelay = ticks - lastRelayTick >= 3 && this.relayPeers.size > 0; // 20Hz compact over Supabase Relay
 
       if (sendWebRtc) {
+        lastWebRtcTick = ticks;
         this.fire('game:state', structuredClone(this.simulation.state));
+      }
+      if (sendRelay) {
+        lastRelayTick = ticks;
       }
       if ((sendWebRtc && this.peers.size > 0) || sendRelay) {
         const wire = packCompactSnapshot(this.simulation.state, ++this.stateSeq);
@@ -734,7 +915,12 @@ export class MultiplayerClient {
         hostId: this.id,
         players: [player],
       };
+      this.pendingProfile = {
+        playerName: String(data?.playerName || 'Pilota').slice(0, 18),
+        customization: data?.customization || DEFAULT_CUSTOMIZATION_BLUE,
+      };
       this.openRoomChannel(code);
+      this.startHeartbeat();
       this.fire('room:joined', this.room);
       this.announce();
       if (event === 'matchmaking:quick') this.startMatch();
@@ -752,6 +938,10 @@ export class MultiplayerClient {
       }
       this.leave();
       this.pendingJoin = { ...data, code };
+      this.pendingProfile = {
+        playerName: String(data?.playerName || 'Pilota').slice(0, 18),
+        customization: data?.customization,
+      };
       this.sendSignal('request', { code });
 
       // Retry discovery/request once in case the initial broadcast was missed
@@ -779,6 +969,23 @@ export class MultiplayerClient {
       }, 15000);
       return this;
     }
+    if (event === 'room:customize' && data?.customization && this.pendingProfile) {
+      this.pendingProfile.customization = data.customization;
+    }
+    if (event === 'room:leave') {
+      if (this.hostId === this.id) {
+        this.leave();
+      } else {
+        if (this.room && this.hostId) {
+          this.sendSignal('leave', { code: this.room.code }, this.hostId);
+        }
+        if (this.hostId || this.usingRelay) {
+          this.sendPeer(this.hostId, 'room:leave', data);
+        }
+        this.leave();
+      }
+      return this;
+    }
     if (this.hostId === this.id) {
       this.command(this.id, event, data);
     } else if (this.hostId || this.usingRelay) {
@@ -792,7 +999,6 @@ export class MultiplayerClient {
       } else {
         this.sendPeer(this.hostId, event, data);
       }
-      if (event === 'room:leave') this.leave();
     }
     return this;
   }
@@ -800,6 +1006,7 @@ export class MultiplayerClient {
   private leave() {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.stopHeartbeat();
     this.clearJoinTimers();
     this.simulation = null;
     this.room = null;
@@ -809,6 +1016,8 @@ export class MultiplayerClient {
     this.inputSeq = 0;
     this.lastRecvStateSeq = 0;
     this.lastPeerInputSeq.clear();
+    this.lastPeerSeen.clear();
+    this.lastHostPacketAt = 0;
     this.hostId = '';
     this.usingRelay = false;
     this.relayReady = false;
@@ -827,6 +1036,9 @@ export class MultiplayerClient {
   disconnect() {
     this.closed = true;
     this.queuedJoin = null;
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('pagehide', this.handlePageHide);
+    }
     this.leave();
     this.connected = false;
     void this.supabase.removeChannel(this.signal);

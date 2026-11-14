@@ -9,6 +9,7 @@ import {
   resolveArenaSphere,
 } from './arena';
 import {
+  MAX_BALL_SPEED,
   MAX_CAR_SPEED,
   NEUTRAL_INPUT,
   SUPERSONIC_THRESHOLD,
@@ -203,4 +204,67 @@ test('sideways and diagonal flips impart lateral/diagonal impulse and rotate on 
   assert.ok(Math.abs(sideState.cars[0].vel.z) < 1, 'Pure sideways flip has minimal Z surge');
   assert.ok(Math.abs(sideState.cars[0].flipAxis.z) > 0.95, 'Sideways flip rolls around Z axis');
 });
+
+test('ball speed stays controlled after high-speed hit and RL jump/air-roll work faithfully', () => {
+  const state = createMatchState('freeplay', 'dfh_night', [
+    { id: 'p1', name: 'Striker', team: 'blue' },
+  ]);
+  state.cars[0].pos = { x: 0, y: CAR_RIDE_HEIGHT, z: -4 };
+  state.cars[0].quat = { x: 0, y: 0, z: 0, w: 1 };
+  state.cars[0].vel = { x: 0, y: 0, z: 31 };
+  state.ball.pos = { x: 0, y: BALL_RADIUS, z: 0 };
+  state.ball.vel = { x: 0, y: 0, z: 0 };
+
+  for (let i = 0; i < 15; i++) {
+    stepSimulation(state, { p1: { ...NEUTRAL_INPUT, throttle: 1, boost: true } }, 1 / 60);
+  }
+  const ballSpeed = Math.hypot(state.ball.vel.x, state.ball.vel.y, state.ball.vel.z);
+  assert.ok(ballSpeed <= MAX_BALL_SPEED + 0.01, `Ball speed ${ballSpeed} exceeded MAX_BALL_SPEED`);
+  assert.ok(ballSpeed < 43, `Ball should stay readable, got ${ballSpeed}`);
+
+  // Variable jump height: holding jump yields higher peak than single-frame tap
+  const tapState = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'Tap', team: 'blue' }]);
+  const holdState = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'Hold', team: 'blue' }]);
+  stepSimulation(tapState, { p1: { ...NEUTRAL_INPUT, jump: true } }, 1 / 60);
+  stepSimulation(holdState, { p1: { ...NEUTRAL_INPUT, jump: true } }, 1 / 60);
+  for (let i = 0; i < 14; i++) {
+    stepSimulation(tapState, { p1: NEUTRAL_INPUT }, 1 / 60);
+    stepSimulation(holdState, { p1: { ...NEUTRAL_INPUT, jump: true } }, 1 / 60);
+  }
+  assert.ok(
+    holdState.cars[0].pos.y > tapState.cars[0].pos.y + 0.15,
+    'Holding jump should gain noticeably higher elevation than a quick tap',
+  );
+
+  // Free Air Roll: holding handbrake + yaw in midair barrel-rolls around Z axis
+  const rollState = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'Roller', team: 'blue' }]);
+  rollState.cars[0].onGround = false;
+  rollState.cars[0].pos = { x: 0, y: 8, z: 0 };
+  rollState.cars[0].quat = { x: 0, y: 0, z: 0, w: 1 };
+  for (let i = 0; i < 12; i++) {
+    stepSimulation(
+      rollState,
+      { p1: { ...NEUTRAL_INPUT, handbrake: true, yaw: 1 } },
+      1 / 60,
+    );
+  }
+  assert.ok(Math.abs(rollState.cars[0].quat.z) > 0.3, 'Handbrake + steer in air should barrel-roll');
+});
+
+test('non-authoritative client prediction does not drift match clock or trigger local overtime', () => {
+  const state = createMatchState('1v1', 'dfh_night', [
+    { id: 'p1', name: 'Host', team: 'blue' },
+    { id: 'p2', name: 'Guest', team: 'orange' },
+  ]);
+  state.phase = 'active';
+  state.clockSeconds = 120.5;
+
+  for (let i = 0; i < 60; i++) {
+    stepSimulation(state, { p2: { ...NEUTRAL_INPUT, throttle: 1 } }, 1 / 60, false);
+  }
+  assert.equal(state.clockSeconds, 120.5);
+  assert.equal(state.isOvertime, false);
+  assert.equal(state.phase, 'active');
+});
+
 
