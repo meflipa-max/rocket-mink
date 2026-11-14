@@ -1,0 +1,6 @@
+{
+  "name": "Turbo League",
+  "description": "Gioco di calcio con auto a razzo 3D multiplayer in tempo reale per PC, con fisica arcade ad alta velocità, boost, salti aerei, flip e stadi illuminati.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
