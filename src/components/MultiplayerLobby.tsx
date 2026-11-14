@@ -72,7 +72,7 @@ export function MultiplayerLobby({
               Multigiocatore Online PC
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Stanze in tempo reale su server autoritativo a 60Hz · Condividi il link o il codice stanza con i tuoi amici
+              Stanze in tempo reale ospitate da un giocatore · Condividi il link o il codice stanza con i tuoi amici
             </p>
           </div>
           <button
@@ -87,10 +87,7 @@ export function MultiplayerLobby({
         {serverOffline && (
           <div className="mb-4 px-4 py-3 rounded-lg bg-amber-500/15 border border-amber-400/35 text-amber-100 text-xs leading-relaxed">
             <strong className="font-bold">Server WebSocket non collegato su questo host statico:</strong>{' '}
-            Vercel supporta solo file statici e funzioni serverless (non Socket.IO persistente). Le
-            partite <strong>vs Bot AI</strong> e il <strong>Garage 3D</strong> funzionano subito qui;
-            per il multiplayer online tra PC diversi, avvia <code>server.ts</code> su Render/Railway e
-            imposta <code>VITE_MULTIPLAYER_SERVER_URL</code> nelle variabili d&apos;ambiente di Vercel.
+            Il server multiplayer non è raggiungibile. Puoi giocare contro i bot mentre la connessione viene riprovata.
           </div>
         )}
 

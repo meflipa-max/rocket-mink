@@ -338,6 +338,10 @@ async function startServer() {
           socket.emit('room:error', 'Stanza non trovata. Controlla il codice.');
           return;
         }
+        if (socketToRoom.get(socket.id) === code) {
+          socket.emit('room:joined', toRoomDetail(room));
+          return;
+        }
         const max = maxPlayersForMode(room.mode);
         if (room.players.size >= max) {
           socket.emit('room:error', 'La stanza è al completo.');
@@ -532,7 +536,7 @@ async function startServer() {
       const code = socketToRoom.get(socket.id);
       if (!code) return;
       const room = rooms.get(code);
-      if (!room) return;
+      if (!room || room.hostId !== socket.id) return;
       startRoomMatch(room);
     });
 

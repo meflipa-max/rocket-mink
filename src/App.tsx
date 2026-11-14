@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { io, type Socket } from 'socket.io-client';
+import { MultiplayerClient } from './game/multiplayer';
 import { GarageModal } from './components/GarageModal';
 import { MatchHud, QUICK_CHAT_OPTIONS } from './components/MatchHud';
 import { MatchEndModal, PauseModal } from './components/MatchModals';
@@ -66,7 +66,7 @@ function loadStoredName(): string {
 export default function App() {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const controllerRef = useRef<GameViewportController | null>(null);
-  const socketRef = useRef<Socket | null>(null);
+  const socketRef = useRef<MultiplayerClient | null>(null);
 
   const [screenState, setScreenState] = useState<AppScreenState>('title');
   const [subModal, setSubModal] = useState<'none' | 'multiplayer' | 'garage'>('none');
@@ -277,41 +277,16 @@ export default function App() {
     };
   }, [handleEvents, startLocalBotMatch]);
 
-  // Connect Socket.IO client (only after verifying backend /api/health exists)
+  // Connect to signaling; match traffic uses direct browser connections.
   useEffect(() => {
-    let cancelled = false;
-    let sock: Socket | null = null;
-    const configuredUrl = (
-      (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_MULTIPLAYER_SERVER_URL || ''
-    )
-      .trim()
-      .replace(/\/+$/, '');
-
-    async function initMultiplayer() {
-      const healthUrl = configuredUrl ? `${configuredUrl}/api/health` : '/api/health';
-      let backendAvailable = false;
-      try {
-        const res = await fetch(healthUrl, { cache: 'no-store' });
-        const contentType = res.headers.get('content-type') || '';
-        if (res.ok && contentType.includes('application/json')) {
-          const data = (await res.json()) as { ok?: boolean };
-          backendAvailable = Boolean(data?.ok);
-        }
-      } catch {
-        backendAvailable = false;
-      }
-
-      if (cancelled) return;
-      if (!backendAvailable) {
-        setServerStatus('static_only');
-        return;
-      }
-
-      sock = configuredUrl
-        ? io(configuredUrl, { transports: ['websocket', 'polling'] })
-        : io({ transports: ['websocket', 'polling'] });
+    let sock: MultiplayerClient | null = null;
+    if (!import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY) {
+      setServerStatus('static_only');
+      return;
+    }
+    try {
+      sock = new MultiplayerClient();
       socketRef.current = sock;
-
       let autoJoinedInvite = false;
       sock.on('connect', () => {
         setServerStatus('online');
@@ -334,7 +309,18 @@ export default function App() {
 
       sock.on('disconnect', () => {
         setServerStatus('connecting');
+        setSocketId('');
+        setCurrentRoom(null);
+        setRooms([]);
+        if (isMultiplayerRef.current) {
+          setIsMultiplayerMatch(false);
+          setScreenState('title');
+          controllerRef.current?.setMode('title');
+          setRoomError('Connessione persa. Rientra nella stanza dopo la riconnessione.');
+          setSubModal('multiplayer');
+        }
       });
+      sock.on('connect_error', () => setServerStatus('static_only'));
 
       sock.on('rooms:update', (list: RoomSummary[]) => {
         setRooms(list);
@@ -378,12 +364,11 @@ export default function App() {
           setChatMessages((prev) => prev.filter((m) => m.id !== msg.id));
         }, 4500);
       });
+    } catch {
+      setServerStatus('static_only');
     }
 
-    initMultiplayer();
-
     return () => {
-      cancelled = true;
       sock?.disconnect();
       socketRef.current = null;
     };
