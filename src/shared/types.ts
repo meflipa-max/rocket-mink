@@ -163,7 +163,7 @@ export interface QuickChatEvent {
 
 export interface GameEventNotification {
   id: string;
-  kind: 'goal' | 'save' | 'demo' | 'shot' | 'overtime' | 'supersonic';
+  kind: 'goal' | 'save' | 'demo' | 'shot' | 'overtime';
   title: string;
   subtitle: string;
   team?: Team;

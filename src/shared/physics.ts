@@ -62,7 +62,6 @@ export type SimulationEvent =
   | { type: 'goal'; team: Team; scorerName: string; speedKph: number; pos: Vec3 }
   | { type: 'save'; playerId: string; playerName: string; team: Team }
   | { type: 'shot'; playerId: string; playerName: string; team: Team; aerial: boolean }
-  | { type: 'supersonic'; playerId: string; team: Team }
   | { type: 'overtime' }
   | { type: 'countdown'; secondsLeft: number }
   | { type: 'match_ended'; winner: Team | null };
@@ -639,9 +638,10 @@ function stepCarsOnly(
     if (speed > MAX_BOOST_SPEED) {
       car.vel = scaleV3(car.vel, MAX_BOOST_SPEED / speed);
     }
-    const wasSupersonic = car.supersonic;
-    car.supersonic = dotV3(car.vel, forward) >= SUPERSONIC_THRESHOLD;
-    if (car.supersonic && !wasSupersonic) events.push({ type: 'supersonic', playerId: car.id, team: car.team });
+    // Enter at full speed, with a small exit margin to avoid flickering and
+    // repeating the sonic boom when throttle or network corrections vary slightly.
+    const supersonicThreshold = car.supersonic ? SUPERSONIC_THRESHOLD - 1 : SUPERSONIC_THRESHOLD;
+    car.supersonic = dotV3(car.vel, forward) >= supersonicThreshold;
     car.wheelSpin += forwardSpeed * dt * 2.2;
 
     // Integrate position

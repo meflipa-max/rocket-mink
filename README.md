@@ -8,7 +8,7 @@ Eseguire `npm ci`, copiare `.env.example` in `.env.local` e impostare l'URL e la
 
 La palla rallenta progressivamente con una resistenza indipendente dalla frequenza della simulazione. Il secondo salto con S/Freccia giù esegue un backflip: la spinta segue l'orientamento dell'auto e si somma alla velocità esistente. Il comando opposto consente di annullare la rotazione conservando la spinta.
 
-Il turbo aumenta la spinta avvicinandosi alla velocità supersonica (circa 95 km/h). Le demolizioni richiedono un impatto frontale in avanti, a velocità supersonica e con sufficiente velocità di avvicinamento; contatti laterali, retromarcia e compagni di squadra producono urti normali. Le demolizioni mostrano BOOM! nel mondo 3D; tiro in porta, tiro aereo, parata e supersonico hanno notifiche dedicate.
+Il turbo aumenta la spinta avvicinandosi alla velocità supersonica (circa 95 km/h), segnalata dall'indicatore vicino al tachimetro senza notifiche centrali. Le demolizioni richiedono un impatto frontale in avanti, a velocità supersonica e con sufficiente velocità di avvicinamento; contatti laterali, retromarcia e compagni di squadra producono urti normali. Le demolizioni mostrano BOOM! nel mondo 3D; tiro in porta, tiro aereo e parata hanno notifiche dedicate.
 
 I replay durano 7 secondi, mostrano fino a 5,2 secondi di azione prima del gol e rallentano il finale. Spazio salta il replay; online il comando resta riservato all'host.
 

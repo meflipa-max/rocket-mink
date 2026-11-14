@@ -157,8 +157,6 @@ export default function App() {
           });
         } else if (ev.type === 'shot') {
           pushNotification({ kind: 'shot', title: ev.aerial ? 'TIRO AEREO!' : 'TIRO IN PORTA!', subtitle: ev.playerName, team: ev.team, points: 10, highlight: ev.playerId === localPlayerIdRef.current });
-        } else if (ev.type === 'supersonic' && ev.playerId === localPlayerIdRef.current) {
-          pushNotification({ kind: 'supersonic', title: 'SUPERSONICO!', subtitle: 'Demolizioni frontali attive', team: ev.team, highlight: true });
         } else if (ev.type === 'demo') {
           const cars = controllerRef.current?.getCarsSnapshot() ?? [];
           const attacker = cars.find((c) => c.id === ev.attackerId);

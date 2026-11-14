@@ -418,6 +418,25 @@ test('demolition requires a fast frontal closing impact, with no side-swipe or t
   }
 });
 
+test('turbo activation is not supersonic and crossing the speed threshold emits no action notification', () => {
+  const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'Turbo', team: 'blue' }]);
+  const car = state.cars[0];
+  car.pos = v3(0, 10, -30);
+  car.onGround = false;
+  car.quat = quatFromYaw(0);
+  for (let i = 0; i < 10; i++) {
+    const events = stepSimulation(state, { p1: { ...NEUTRAL_INPUT, boost: i % 2 === 0 } }, 1 / 60);
+    assert.equal(car.supersonic, false, 'Brief turbo presses below the speed threshold must not activate supersonic');
+    assert.deepEqual(events, []);
+  }
+  for (const [speed, expected] of [[26.6, true], [26.2, true], [25.4, false], [26.2, false], [26.6, true]] as const) {
+    car.vel = v3(0, 0, speed);
+    const events = stepSimulation(state, {}, 1 / 60);
+    assert.equal(car.supersonic, expected, `Expected supersonic=${expected} at ${speed} m/s`);
+    assert.deepEqual(events, [], 'Supersonic is a speed state, not a rewarded action');
+  }
+});
+
 test('shot and save notifications correspond to actual goal-directed actions', () => {
   for (const x of [0, 23]) {
     const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'Striker', team: 'blue' }]);
