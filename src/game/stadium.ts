@@ -7,6 +7,7 @@ import {
   GOAL_DEPTH,
   GOAL_HALF_X,
   GOAL_HEIGHT,
+  RAMP_RADIUS,
   createBoostPads,
 } from '../shared/arena';
 import type { ArenaId, BoostPadState } from '../shared/types';
@@ -166,6 +167,28 @@ function createWallGridTexture(): THREE.CanvasTexture {
   return tex;
 }
 
+function createTurfDetail(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 128;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 900; i++) {
+    ctx.strokeStyle = i % 2 ? '#999999' : '#666666';
+    const x = (i * 73) % 128;
+    const y = (i * 47) % 128;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + 1, y + 3);
+    ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(80, 108);
+  tex.anisotropy = 8;
+  return tex;
+}
+
 function createSoccerBallTexture(): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = 512;
@@ -260,6 +283,47 @@ export function buildStadium(
   const group = new THREE.Group();
   const disposables: Array<{ dispose: () => void }> = [];
 
+  // A real sky dome gives the horizon depth without external textures or requests.
+  const skyGeo = new THREE.SphereGeometry(360, 40, 24);
+  const skyMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    uniforms: {
+      zenith: { value: new THREE.Color('#071329') },
+      horizon: { value: new THREE.Color('#516b91') },
+      daylight: { value: 0 },
+    },
+    vertexShader: `varying vec3 direction;
+      void main() { direction = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `varying vec3 direction;
+      uniform vec3 zenith; uniform vec3 horizon; uniform float daylight;
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p) {
+        vec2 cell = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(cell), hash(cell + vec2(1.0, 0.0)), f.x), mix(hash(cell + vec2(0.0, 1.0)), hash(cell + vec2(1.0)), f.x), f.y);
+      }
+      void main() {
+        vec3 d = normalize(direction);
+        vec3 color = mix(horizon, zenith, pow(max(d.y, 0.0), 0.45));
+        float sun = pow(max(dot(d, normalize(vec3(0.5, 0.65, 0.35))), 0.0), 900.0);
+        float haze = pow(max(dot(d, normalize(vec3(0.5, 0.65, 0.35))), 0.0), 14.0);
+        vec2 cloudUV = d.xz / max(d.y + 0.2, 0.25) * 3.0;
+        float cloud = noise(cloudUV) * 0.6 + noise(cloudUV * 2.1) * 0.28 + noise(cloudUV * 4.2) * 0.12;
+        color += vec3(0.95, 0.78, 0.52) * (sun + haze * 0.16) * daylight;
+        color = mix(color, vec3(0.85, 0.92, 1.0), smoothstep(0.53, 0.8, cloud) * smoothstep(0.05, 0.22, d.y) * 0.28 * daylight);
+        vec2 cell = floor(d.xz / max(d.y + 0.35, 0.15) * 320.0);
+        float star = step(0.9985, fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453));
+        color += star * smoothstep(0.15, 0.6, d.y) * (1.0 - daylight) * 0.55;
+        gl_FragColor = vec4(color, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+  });
+  const sky = new THREE.Mesh(skyGeo, skyMat);
+  sky.frustumCulled = false;
+  group.add(sky);
+  disposables.push(skyGeo, skyMat);
+
   // Lighting rig (warm key + cool hemisphere + rim)
   const hemiLight = new THREE.HemisphereLight(0x93c5fd, 0x1e293b, 0.85);
   group.add(hemiLight);
@@ -299,17 +363,20 @@ export function buildStadium(
 
   // Main Pitch Floor
   let pitchTex = createPitchTexture(initialTheme);
+  const turfDetail = createTurfDetail();
   const pitchGeo = new THREE.PlaneGeometry(ARENA_HALF_X * 2, ARENA_HALF_Z * 2);
   pitchGeo.rotateX(-Math.PI / 2);
   const pitchMat = new THREE.MeshStandardMaterial({
     map: pitchTex,
+    bumpMap: turfDetail,
+    bumpScale: 0.055,
     roughness: 0.72,
     metalness: 0.06,
   });
   const pitchMesh = new THREE.Mesh(pitchGeo, pitchMat);
   pitchMesh.receiveShadow = !isSoftwareGl;
   group.add(pitchMesh);
-  disposables.push(pitchGeo, pitchMat);
+  disposables.push(pitchGeo, pitchMat, turfDetail);
 
   // Octagonal Stadium Barrier Walls (translucent hex energy glass + lower neon kickplate)
   const wallTex = createWallGridTexture();
@@ -396,6 +463,67 @@ export function buildStadium(
   addWallSegment(-hx + c, hz, -gx, hz, ARENA_HEIGHT, 0, 0xf97316);
   addWallSegment(gx, hz, hx - c, hz, ARENA_HEIGHT, 0, 0xf97316);
   addWallSegment(-gx, hz, gx, hz, ARENA_HEIGHT - GOAL_HEIGHT, GOAL_HEIGHT, 0xf97316);
+
+  // Render the same circular fillet used by resolveArenaSphere. Mitered joins
+  // follow the octagon continuously, while both goal mouths stay completely open.
+  const perimeter = [
+    [-hx, -hz + c], [-hx + c, -hz], [-gx, -hz], [gx, -hz],
+    [hx - c, -hz], [hx, -hz + c], [hx, hz - c], [hx - c, hz],
+    [gx, hz], [-gx, hz], [-hx + c, hz], [-hx, hz - c],
+  ].map(([x, z]) => new THREE.Vector2(x, z));
+  const normals = perimeter.map((p, i) => {
+    const edge = perimeter[(i + 1) % perimeter.length].clone().sub(p).normalize();
+    return new THREE.Vector2(-edge.y, edge.x);
+  });
+  const insetPoint = (i: number, distance: number) => {
+    const prev = normals[(i + normals.length - 1) % normals.length];
+    const next = normals[i];
+    return perimeter[i].clone().add(prev.clone().add(next).multiplyScalar(distance / (1 + prev.dot(next))));
+  };
+  const rampMat = new THREE.MeshStandardMaterial({
+    color: 0x426078, roughness: 0.58, metalness: 0.28, side: THREE.DoubleSide,
+  });
+  disposables.push(rampMat);
+  for (let segment = 0; segment < perimeter.length; segment++) {
+    if (segment === 2 || segment === 8) continue;
+    const next = (segment + 1) % perimeter.length;
+    const positions: number[] = [];
+    const indices: number[] = [];
+    for (let j = 0; j <= 24; j++) {
+      const angle = j / 24 * Math.PI / 2;
+      const distance = RAMP_RADIUS * (1 - Math.sin(angle));
+      const y = RAMP_RADIUS * (1 - Math.cos(angle));
+      for (const index of [segment, next]) {
+        const p = insetPoint(index, distance);
+        positions.push(p.x, y + 0.012, p.y);
+      }
+      if (j < 24) {
+        const k = j * 2;
+        indices.push(k, k + 2, k + 1, k + 1, k + 2, k + 3);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    const ramp = new THREE.Mesh(geo, rampMat);
+    ramp.receiveShadow = !isSoftwareGl;
+    group.add(ramp);
+    disposables.push(geo);
+    // Three contour lines make the slope readable at driving height.
+    for (const angle of [0.08, 0.48, 1.28]) {
+      const distance = RAMP_RADIUS * (1 - Math.sin(angle));
+      const a = insetPoint(segment, distance);
+      const b = insetPoint(next, distance);
+      const y = RAMP_RADIUS * (1 - Math.cos(angle)) + 0.045;
+      const lineGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(a.x, y, a.y), new THREE.Vector3(b.x, y, b.y),
+      ]);
+      const lineMat = new THREE.LineBasicMaterial({ color: (a.y + b.y) < 0 ? 0x83c9ff : 0xffbd72 });
+      group.add(new THREE.Line(lineGeo, lineMat));
+      disposables.push(lineGeo, lineMat);
+    }
+  }
 
   const createGoalSignTexture = (title: string, bgHex: string, borderHex: string) => {
     const canvas = document.createElement('canvas');
@@ -563,14 +691,34 @@ export function buildStadium(
     roughness: 0.85,
   });
   disposables.push(standGeo, endStandGeo, standMat);
+  // Individual terraces replace the block silhouette and support the crowd rows.
+  const terraceGeo = new THREE.BoxGeometry(1.5, 1, ARENA_HALF_Z * 1.65);
+  const endTerraceGeo = new THREE.BoxGeometry(ARENA_HALF_X * 1.9, 1, 1.5);
+  const terraceMat = new THREE.MeshStandardMaterial({ color: 0x34445c, roughness: 0.8 });
+  disposables.push(terraceGeo, endTerraceGeo, terraceMat);
+  for (const side of [-1, 1]) {
+    for (let row = 0; row < 7; row++) {
+      const terrace = new THREE.Mesh(terraceGeo, terraceMat);
+      const height = 2 + row * 1.55;
+      terrace.scale.y = height;
+      terrace.position.set(side * (hx + 8.5 + row * 1.5), height / 2, 0);
+      group.add(terrace);
+      const endTerrace = new THREE.Mesh(endTerraceGeo, terraceMat);
+      endTerrace.scale.y = height;
+      endTerrace.position.set(0, height / 2, side * (hz + 12 + row * 1.5));
+      group.add(endTerrace);
+    }
+  }
   for (const sx of [-(ARENA_HALF_X + 14), ARENA_HALF_X + 14]) {
     const stand = new THREE.Mesh(standGeo, standMat);
     stand.position.set(sx, 6, 0);
+    // The solid backing stays behind the terraces instead of hiding the crowd.
+    stand.position.x = Math.sign(sx) * (ARENA_HALF_X + 24);
     group.add(stand);
   }
   for (const sz of [-(ARENA_HALF_Z + 18), ARENA_HALF_Z + 18]) {
     const endStand = new THREE.Mesh(endStandGeo, standMat);
-    endStand.position.set(0, 5.5, sz);
+    endStand.position.set(0, 5.5, Math.sign(sz) * (ARENA_HALF_Z + 27));
     group.add(endStand);
   }
 
@@ -602,17 +750,17 @@ export function buildStadium(
   // Instanced Crowd Spectating Dots in Grandstands
   const crowdGeo = new THREE.BoxGeometry(0.75, 0.75, 0.75);
   const crowdMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-  const crowdCount = 300;
+  const crowdCount = isSoftwareGl ? 560 : 1680;
   const crowdInst = new THREE.InstancedMesh(crowdGeo, crowdMat, crowdCount);
   const dummy = new THREE.Object3D();
   const cColor = new THREE.Color();
   for (let i = 0; i < crowdCount; i++) {
     const side = i % 2 === 0 ? -1 : 1;
-    const tier = i % 5;
+    const tier = Math.floor(i / 2) % 7;
     dummy.position.set(
-      side * (ARENA_HALF_X + 9.2 + tier * 1.2),
-      2.6 + tier * 1.8,
-      ((i * 29) % 130) - 65,
+      side * (ARENA_HALF_X + 8.5 + tier * 1.5),
+      2.6 + tier * 1.55,
+      ((i * 29) % 138) - 69,
     );
     dummy.updateMatrix();
     crowdInst.setMatrixAt(i, dummy.matrix);
@@ -708,6 +856,11 @@ export function buildStadium(
     pitchMat.needsUpdate = true;
     pitchTex.dispose();
     pitchTex = newTex;
+    const day = arenaId === 'mannfield_day';
+    skyMat.uniforms.daylight.value = day ? 1 : 0;
+    skyMat.uniforms.zenith.value.set(day ? '#1869c4' : arenaId === 'neo_tokyo' ? '#100d2a' : '#071329');
+    skyMat.uniforms.horizon.value.set(day ? '#c2e4f4' : arenaId === 'neo_tokyo' ? '#50365f' : '#516b91');
+    rampMat.color.setHex(day ? 0x718d97 : 0x426078);
 
     if (arenaId === 'mannfield_day') {
       scene.background = new THREE.Color(0x60a5fa);

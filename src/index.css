@@ -30,3 +30,21 @@
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
+
+.action-callout { animation: action-arrive 220ms ease-out both; }
+@keyframes action-arrive {
+  from { opacity: 0; scale: 0.65; }
+  to { opacity: 1; scale: 1; }
+}
+.replay-vignette {
+  background: radial-gradient(ellipse at center, transparent 45%, rgba(3, 10, 24, 0.5));
+  box-shadow: inset 0 0 100px rgba(56, 189, 248, 0.08);
+  animation: replay-arrive 450ms ease-out both;
+}
+@keyframes replay-arrive {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .action-callout, .replay-vignette { animation: none; }
+}

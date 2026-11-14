@@ -24,6 +24,8 @@ export interface CarCustomization {
   paintFinish?: PaintFinish;
   topper?: TopperStyle;
   underglow?: boolean;
+  wheelColor?: string;
+  spoiler?: 'sport' | 'ducktail' | 'none';
 }
 
 export interface Vec3 {
@@ -161,10 +163,12 @@ export interface QuickChatEvent {
 
 export interface GameEventNotification {
   id: string;
-  kind: 'goal' | 'save' | 'demo' | 'shot' | 'overtime';
+  kind: 'goal' | 'save' | 'demo' | 'shot' | 'overtime' | 'supersonic';
   title: string;
   subtitle: string;
   team?: Team;
+  highlight?: boolean;
+  points?: number;
 }
 
 export const DEFAULT_CUSTOMIZATION_BLUE: CarCustomization = {

@@ -105,6 +105,8 @@ export default function App() {
   const [goalMarkers, setGoalMarkers] = useState<GoalMarkerProjection[]>([]);
   const [carsSnapshot, setCarsSnapshot] = useState<CarState[]>([]);
   const [localPlayerId, setLocalPlayerId] = useState<string>('local-player');
+  const localPlayerIdRef = useRef(localPlayerId);
+  localPlayerIdRef.current = localPlayerId;
   const [showScoreboard, setShowScoreboard] = useState(false);
   const [muted, setMuted] = useState(false);
   const [chatMessages, setChatMessages] = useState<QuickChatEvent[]>([]);
@@ -141,6 +143,8 @@ export default function App() {
             title: 'GOL!',
             subtitle: `${ev.scorerName} (${ev.speedKph} km/h)`,
             team: ev.team,
+            highlight: true,
+            points: 100,
           });
         } else if (ev.type === 'save') {
           pushNotification({
@@ -148,12 +152,24 @@ export default function App() {
             title: 'PARATA!',
             subtitle: ev.playerName,
             team: ev.team,
+            highlight: ev.playerId === localPlayerIdRef.current,
+            points: 50,
           });
+        } else if (ev.type === 'shot') {
+          pushNotification({ kind: 'shot', title: ev.aerial ? 'TIRO AEREO!' : 'TIRO IN PORTA!', subtitle: ev.playerName, team: ev.team, points: 10, highlight: ev.playerId === localPlayerIdRef.current });
+        } else if (ev.type === 'supersonic' && ev.playerId === localPlayerIdRef.current) {
+          pushNotification({ kind: 'supersonic', title: 'SUPERSONICO!', subtitle: 'Demolizioni frontali attive', team: ev.team, highlight: true });
         } else if (ev.type === 'demo') {
+          const cars = controllerRef.current?.getCarsSnapshot() ?? [];
+          const attacker = cars.find((c) => c.id === ev.attackerId);
+          const victim = cars.find((c) => c.id === ev.victimId);
           pushNotification({
             kind: 'demo',
-            title: 'DEMOLIZIONE!',
-            subtitle: 'Avversario distrutto',
+            title: 'BOOM!',
+            subtitle: `${attacker?.name ?? 'Pilota'} → ${victim?.name ?? 'Avversario'}`,
+            team: attacker?.team,
+            highlight: ev.attackerId === localPlayerIdRef.current || ev.victimId === localPlayerIdRef.current,
+            points: ev.attackerId === localPlayerIdRef.current ? 25 : undefined,
           });
         } else if (ev.type === 'overtime') {
           pushNotification({

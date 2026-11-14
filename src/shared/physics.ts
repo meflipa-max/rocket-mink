@@ -61,6 +61,8 @@ export type SimulationEvent =
   | { type: 'demo'; attackerId: string; victimId: string; pos: Vec3 }
   | { type: 'goal'; team: Team; scorerName: string; speedKph: number; pos: Vec3 }
   | { type: 'save'; playerId: string; playerName: string; team: Team }
+  | { type: 'shot'; playerId: string; playerName: string; team: Team; aerial: boolean }
+  | { type: 'supersonic'; playerId: string; team: Team }
   | { type: 'overtime' }
   | { type: 'countdown'; secondsLeft: number }
   | { type: 'match_ended'; winner: Team | null };
@@ -398,6 +400,7 @@ function stepCarsOnly(
       continue;
     }
 
+    car.angVel = v3();
     const input = car.isBot
       ? computeBotInput(car, state)
       : inputs[car.id] ?? NEUTRAL_INPUT;
@@ -417,7 +420,10 @@ function stepCarsOnly(
     const isBoosting = input.boost && car.boost > 0.2;
     if (isBoosting) {
       car.boost = Math.max(0, car.boost - (state.mode === 'freeplay' ? 12 : 30.0) * dt);
-      const boostAccel = car.onGround ? 28.0 : 23.0;
+      // A smooth second surge above cruising speed makes the supersonic phase
+      // distinct without an instantaneous velocity jump.
+      const surge = clamp((Math.max(0, forwardSpeed) - 17) / 9.5, 0, 1);
+      const boostAccel = (car.onGround ? 23 : 20) + 14 * surge * surge * (3 - 2 * surge);
       car.vel = addV3(car.vel, scaleV3(forward, boostAccel * dt));
     }
 
@@ -572,7 +578,8 @@ function stepCarsOnly(
 
       // Air control / Barrel Roll (Avvitamento) & Flip Spin
       if (car.isFlipping) {
-        car.flipTimer -= dt;
+        const spinDt = Math.min(dt, car.flipTimer);
+        car.flipTimer = Math.max(0, car.flipTimer - dt);
         const flipDuration = 0.38;
         // Rocket League Flip Cancel: pulling opposite pitch slows pitch rotation while preserving lateral barrel roll
         const pitchCancelling =
@@ -580,9 +587,10 @@ function stepCarsOnly(
           input.pitch !== 0 &&
           Math.sign(input.pitch) === Math.sign(car.flipAxis.x);
         const spinMult = pitchCancelling ? 0.32 : 1.0;
-        const spinStep = ((Math.PI * 2) / flipDuration) * spinMult * dt;
+        const spinStep = ((Math.PI * 2) / flipDuration) * spinMult * spinDt;
         const flipDelta = quatFromAxisAngle(car.flipAxis, spinStep);
         car.quat = normQuat(mulQuat(car.quat, flipDelta));
+        car.angVel = rotateVecByQuat(scaleV3(car.flipAxis, spinStep / dt), car.quat);
 
         if (Math.abs(input.roll) > 0.05) {
           car.quat = normQuat(
@@ -631,7 +639,9 @@ function stepCarsOnly(
     if (speed > MAX_BOOST_SPEED) {
       car.vel = scaleV3(car.vel, MAX_BOOST_SPEED / speed);
     }
-    car.supersonic = speed >= SUPERSONIC_THRESHOLD;
+    const wasSupersonic = car.supersonic;
+    car.supersonic = dotV3(car.vel, forward) >= SUPERSONIC_THRESHOLD;
+    if (car.supersonic && !wasSupersonic) events.push({ type: 'supersonic', playerId: car.id, team: car.team });
     car.wheelSpin += forwardSpeed * dt * 2.2;
 
     // Integrate position
@@ -713,9 +723,9 @@ function stepBall(
 
   // Gravity, air drag & natural deceleration
   ball.vel.y += GRAVITY * 0.92 * dt;
-  const airDrag = 1 - 0.14 * dt;
+  const airDrag = Math.exp(-0.08 * dt);
   ball.vel = scaleV3(ball.vel, airDrag);
-  ball.angVel = scaleV3(ball.angVel, 1 - 0.25 * dt);
+  ball.angVel = scaleV3(ball.angVel, Math.exp(-0.25 * dt));
 
   // Clamp max ball speed to readable Rocket League-like pace
   const speed = lenV3(ball.vel);
@@ -732,16 +742,27 @@ function stepBall(
     ball.pos = addV3(ball.pos, scaleV3(hit.normal, hit.penetration));
     const vn = dotV3(ball.vel, hit.normal);
     if (vn < 0) {
-      const restitution = hit.normal.y > 0.8 ? 0.56 : 0.64;
       const bounceSpeed = -vn;
+      // Gravity at resting contact must not produce a fresh micro-bounce every tick.
+      const restingContact = hit.isFloorOrRamp && bounceSpeed < 0.8;
+      const restitution = restingContact ? 0 : hit.normal.y > 0.8 ? 0.56 : 0.64;
       ball.vel = subV3(ball.vel, scaleV3(hit.normal, (1 + restitution) * vn));
 
       // Rolling friction + spin coupling
       const tangentVel = subV3(ball.vel, scaleV3(hit.normal, dotV3(ball.vel, hit.normal)));
-      const rollDrag = hit.normal.y > 0.75 ? 0.08 : 0.05;
+      // Resistance is per second, never per contact: identical coast at 30–240 Hz.
+      // Real impacts lose a small amount of tangential energy; resting rolls taper
+      // exponentially all the way down instead of stopping at a speed threshold.
+      const rollDrag = restingContact
+        ? 1 - Math.exp(-0.18 * dt)
+        : Math.min(0.06, bounceSpeed * 0.003);
       ball.vel = subV3(ball.vel, scaleV3(tangentVel, rollDrag));
       const spinAxis = crossV3(hit.normal, tangentVel);
-      ball.angVel = scaleV3(spinAxis, 1 / ball.radius);
+      const rollingSpin = scaleV3(spinAxis, (1 - rollDrag) / ball.radius);
+      ball.angVel = addV3(
+        scaleV3(ball.angVel, Math.exp(-12 * dt)),
+        scaleV3(rollingSpin, 1 - Math.exp(-12 * dt)),
+      );
 
       if (bounceSpeed > 6.0) {
         events.push({ type: 'wall_hit', speed: bounceSpeed, pos: { ...ball.pos } });
@@ -786,7 +807,12 @@ function resolveCarBallCollisions(
     ball.pos = addV3(ball.pos, scaleV3(worldNormal, penetration + 0.02));
 
     // Relative velocity along contact normal
-    const relVel = subV3(ball.vel, car.vel);
+    // A flipping bumper has contact velocity of its own. This makes backflip
+    // clears and nose/tail flicks follow the actual direction of rotation.
+    const rotationVelocity = crossV3(car.angVel, subV3(ball.pos, car.pos));
+    const rotationSpeed = lenV3(rotationVelocity);
+    const contactVelocity = addV3(car.vel, scaleV3(rotationVelocity, Math.min(1, 8 / Math.max(rotationSpeed, 0.001))));
+    const relVel = subV3(ball.vel, contactVelocity);
     const vn = dotV3(relVel, worldNormal);
 
     if (vn < 0) {
@@ -825,7 +851,8 @@ function resolveCarBallCollisions(
       const ownGoalZ = car.team === 'blue' ? -ARENA_HALF_Z : ARENA_HALF_Z;
       const nearOwnGoal =
         Math.abs(ball.pos.z - ownGoalZ) < 16 && Math.abs(ball.pos.x) < GOAL_HALF_X + 5;
-      if (nearOwnGoal && Math.sign(ball.vel.z) !== Math.sign(ownGoalZ)) {
+      const wasThreateningGoal = Math.sign(relVel.z + contactVelocity.z) === Math.sign(ownGoalZ) && Math.abs(relVel.z + contactVelocity.z) > 6;
+      if (nearOwnGoal && wasThreateningGoal && Math.sign(ball.vel.z) !== Math.sign(ownGoalZ)) {
         car.saves += 1;
         car.score += 50;
         events.push({
@@ -839,9 +866,13 @@ function resolveCarBallCollisions(
       // Detect Shot on target
       const targetGoalZ = car.team === 'blue' ? ARENA_HALF_Z : -ARENA_HALF_Z;
       const towardTarget = Math.sign(ball.vel.z) === Math.sign(targetGoalZ);
-      if (towardTarget && hitSpeed > 18 && Math.abs(ball.pos.x) < GOAL_HALF_X + 12) {
+      const goalTravelTime = (targetGoalZ - ball.pos.z) / ball.vel.z;
+      const projectedX = ball.pos.x + ball.vel.x * goalTravelTime;
+      const projectedY = ball.pos.y + ball.vel.y * goalTravelTime + 0.5 * GRAVITY * 0.92 * goalTravelTime * goalTravelTime;
+      if (towardTarget && hitSpeed > 18 && goalTravelTime > 0 && goalTravelTime < 3 && Math.abs(projectedX) < GOAL_HALF_X && projectedY < GOAL_HEIGHT && projectedY > -BALL_RADIUS) {
         car.shots += 1;
         car.score += 10;
+        events.push({ type: 'shot', playerId: car.id, playerName: car.name, team: car.team, aerial: car.pos.y > 4 });
       }
 
       events.push({
@@ -875,24 +906,30 @@ function resolveCarCollisions(
 
       const n = dist > 1e-4 ? scaleV3(delta, 1 / dist) : v3(1, 0, 0);
 
-      // Check Rocket League Supersonic Demolition!
+      // Only a committed, nose-first supersonic impact can demolish. Side swipes,
+      // reversing, glancing touches and cars travelling together remain bumps.
       if (a.team !== b.team) {
         const aIntoB = dotV3(a.vel, n);
         const bIntoA = -dotV3(b.vel, n);
-        if (a.supersonic && aIntoB > 20 && aIntoB > bIntoA + 5) {
+        const closingSpeed = aIntoB + bIntoA;
+        const aForward = rotateVecByQuat(v3(0, 0, 1), a.quat);
+        const bForward = rotateVecByQuat(v3(0, 0, 1), b.quat);
+        const aDemolishes = a.supersonic && aIntoB >= SUPERSONIC_THRESHOLD * 0.94 && dotV3(aForward, n) > 0.85 && closingSpeed > 18;
+        const bDemolishes = b.supersonic && bIntoA >= SUPERSONIC_THRESHOLD * 0.94 && -dotV3(bForward, n) > 0.85 && closingSpeed > 18;
+        if (aDemolishes) {
           b.demolishedTimer = 3.0;
           a.demos += 1;
           a.score += 25;
           events.push({ type: 'demo', attackerId: a.id, victimId: b.id, pos: { ...b.pos } });
-          continue;
         }
-        if (b.supersonic && bIntoA > 20 && bIntoA > aIntoB + 5) {
+        if (bDemolishes) {
           a.demolishedTimer = 3.0;
           b.demos += 1;
           b.score += 25;
           events.push({ type: 'demo', attackerId: b.id, victimId: a.id, pos: { ...a.pos } });
-          continue;
         }
+        if (a.demolishedTimer > 0) break;
+        if (b.demolishedTimer > 0) continue;
       }
 
       // Standard car-car bump separation

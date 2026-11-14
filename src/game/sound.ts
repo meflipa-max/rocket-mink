@@ -17,6 +17,9 @@ class SoundEngine {
 
   private windGain: GainNode | null = null;
   private windFilter: BiquadFilterNode | null = null;
+  private roadGain: GainNode | null = null;
+  private roadFilter: BiquadFilterNode | null = null;
+  private crowdGain: GainNode | null = null;
 
   private started = false;
 
@@ -36,6 +39,8 @@ class SoundEngine {
       this.boostNoiseGain?.gain.setTargetAtTime(0, now, 0.04);
       this.boostToneGain?.gain.setTargetAtTime(0, now, 0.04);
       this.windGain?.gain.setTargetAtTime(0, now, 0.04);
+      this.roadGain?.gain.setTargetAtTime(0, now, 0.04);
+      this.crowdGain?.gain.setTargetAtTime(0, now, 0.04);
     }
   }
 
@@ -177,9 +182,41 @@ class SoundEngine {
 
     this.windFilter = wFilter;
     this.windGain = wGain;
+
+    const road = this.ctx.createBufferSource();
+    road.buffer = buffer;
+    road.loop = true;
+    const roadFilter = this.ctx.createBiquadFilter();
+    roadFilter.type = 'bandpass';
+    roadFilter.Q.value = 0.7;
+    const roadGain = this.ctx.createGain();
+    roadGain.gain.value = 0;
+    road.connect(roadFilter).connect(roadGain).connect(this.compressor);
+    road.start(now, 0.3);
+    this.roadGain = roadGain;
+    this.roadFilter = roadFilter;
+
+    // Low, wide stereo crowd bed leaves engine and impact transients clear.
+    const crowdGain = this.ctx.createGain();
+    crowdGain.gain.value = 0;
+    crowdGain.connect(this.compressor);
+    for (const side of [-0.75, 0.75]) {
+      const crowd = this.ctx.createBufferSource();
+      crowd.buffer = buffer;
+      crowd.loop = true;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 420;
+      filter.Q.value = 0.5;
+      const pan = this.ctx.createStereoPanner();
+      pan.pan.value = side;
+      crowd.connect(filter).connect(pan).connect(crowdGain);
+      crowd.start(now, side < 0 ? 0.1 : 0.7);
+    }
+    this.crowdGain = crowdGain;
   }
 
-  public updateContinuous(active: boolean, speed: number, isBoosting: boolean): void {
+  public updateContinuous(active: boolean, speed: number, isBoosting: boolean, throttle = 0, grounded = true, drifting = false): void {
     if (
       !this.ctx ||
       !this.engineOsc ||
@@ -201,15 +238,19 @@ class SoundEngine {
       this.boostNoiseGain.gain.setTargetAtTime(0, now, 0.04);
       this.boostToneGain.gain.setTargetAtTime(0, now, 0.04);
       this.windGain.gain.setTargetAtTime(0, now, 0.05);
+      this.roadGain?.gain.setTargetAtTime(0, now, 0.05);
+      this.crowdGain?.gain.setTargetAtTime(0, now, 0.15);
       return;
     }
 
     const normSpeed = Math.min(1, speed / 34);
-    const rpm = 54 + normSpeed * 126 + (isBoosting ? 28 : 0);
+    const gear = Math.min(3, Math.floor(speed / 8));
+    const gearLoad = Math.min(1, Math.max(0, (speed - gear * 8) / 8));
+    const rpm = 54 + gear * 19 + gearLoad * 46 + Math.abs(throttle) * 16 + (isBoosting ? 25 : 0);
     this.engineOsc.frequency.setTargetAtTime(rpm, now, 0.05);
     this.engineSubOsc.frequency.setTargetAtTime(rpm * 0.502, now, 0.05);
     this.engineFilter.frequency.setTargetAtTime(190 + normSpeed * 540 + (isBoosting ? 260 : 0), now, 0.06);
-    this.engineGain.gain.setTargetAtTime(0.028 + normSpeed * 0.042, now, 0.06);
+    this.engineGain.gain.setTargetAtTime(0.02 + normSpeed * 0.025 + Math.abs(throttle) * 0.022, now, 0.08);
 
     // Thruster flame jet
     this.boostFilter.frequency.setTargetAtTime(isBoosting ? 980 + normSpeed * 320 : 420, now, 0.04);
@@ -221,6 +262,9 @@ class SoundEngine {
     const windFactor = Math.max(0, (speed - 15) / 18);
     this.windFilter.frequency.setTargetAtTime(850 + windFactor * 800, now, 0.08);
     this.windGain.gain.setTargetAtTime(Math.min(0.055, windFactor * 0.045), now, 0.08);
+    this.roadFilter?.frequency.setTargetAtTime(drifting ? 1800 : 220 + speed * 12, now, 0.08);
+    this.roadGain?.gain.setTargetAtTime(grounded ? Math.min(0.06, speed / 31 * (drifting ? 0.07 : 0.025)) : 0, now, 0.06);
+    this.crowdGain?.gain.setTargetAtTime(0.012, now, 0.3);
   }
 
   public playJump(isFlip = false): void {
@@ -320,23 +364,29 @@ class SoundEngine {
     }
   }
 
-  public playBallHit(speed: number): void {
+  public playBallHit(speed: number, pan = 0, volume = 1, wall = false): void {
     if (this.muted || !this.ctx || !this.compressor) return;
     const now = this.ctx.currentTime;
     const weight = Math.min(1, Math.max(0.22, speed / 34));
+    const output = this.ctx.createGain();
+    output.gain.value = volume;
+    const stereo = this.ctx.createStereoPanner();
+    stereo.pan.value = Math.max(-1, Math.min(1, pan));
+    output.connect(stereo).connect(this.compressor);
 
     // Punchy leather ball sub-thump
     const sub = this.ctx.createOscillator();
     const subGain = this.ctx.createGain();
-    sub.type = 'triangle';
-    sub.frequency.setValueAtTime(145 + weight * 85, now);
+    sub.type = wall ? 'sine' : 'triangle';
+    sub.frequency.setValueAtTime((wall ? 270 : 145) + weight * 85, now);
     sub.frequency.exponentialRampToValueAtTime(42, now + 0.13);
     subGain.gain.setValueAtTime(0.24 * weight, now);
     subGain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
     sub.connect(subGain);
-    subGain.connect(this.compressor);
+    subGain.connect(output);
     sub.start(now);
     sub.stop(now + 0.16);
+    sub.onended = () => { output.disconnect(); stereo.disconnect(); sub.disconnect(); subGain.disconnect(); };
 
     // Surface snap crack for solid strikes
     const buf = this.getNoiseBuffer();
@@ -345,16 +395,17 @@ class SoundEngine {
       src.buffer = buf;
       const filter = this.ctx.createBiquadFilter();
       filter.type = 'bandpass';
-      filter.frequency.setValueAtTime(750 + weight * 850, now);
+      filter.frequency.setValueAtTime((wall ? 1600 : 750) + weight * 850, now);
       filter.Q.value = 1.6;
       const nGain = this.ctx.createGain();
       nGain.gain.setValueAtTime(0.12 * weight, now);
       nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
       src.connect(filter);
       filter.connect(nGain);
-      nGain.connect(this.compressor);
+      nGain.connect(output);
       src.start(now);
       src.stop(now + 0.07);
+      src.onended = () => { src.disconnect(); filter.disconnect(); nGain.disconnect(); };
     }
   }
 

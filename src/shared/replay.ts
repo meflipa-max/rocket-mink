@@ -1,9 +1,15 @@
 import { clamp, lerp, normQuat, slerpQuat } from './math3d';
 import type { GameStateSnapshot, Quat, Vec3 } from './types';
 
-export const GOAL_CELEBRATION_DURATION = 2.0;
-export const GOAL_REPLAY_DURATION = 4.6;
-export const REPLAY_CLIP_WINDOW_SEC = 4.4;
+export const GOAL_CELEBRATION_DURATION = 1.25;
+export const GOAL_REPLAY_DURATION = 7.0;
+export const REPLAY_CLIP_WINDOW_SEC = 5.2;
+
+// Show the approach at speed, then slow the decisive final touch and goal.
+export function replayTimelineProgress(progress: number): number {
+  const p = clamp(progress, 0, 1);
+  return p < 0.65 ? p / 0.65 * 0.82 : 0.82 + (p - 0.65) / 0.35 * 0.18;
+}
 const SAMPLE_INTERVAL_SEC = 1 / 30;
 const MAX_BUFFER_AGE_SEC = 7.5;
 
@@ -45,8 +51,8 @@ export class GoalReplayRecorder {
     this.lastSampleTime = -Infinity;
   }
 
-  record(state: GameStateSnapshot, elapsedSec: number): void {
-    if (elapsedSec - this.lastSampleTime < SAMPLE_INTERVAL_SEC && this.frames.length > 0) {
+  record(state: GameStateSnapshot, elapsedSec: number, force = false): void {
+    if (!force && elapsedSec - this.lastSampleTime < SAMPLE_INTERVAL_SEC && this.frames.length > 0) {
       return;
     }
     this.lastSampleTime = elapsedSec;

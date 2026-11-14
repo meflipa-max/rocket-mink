@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMatchState } from './physics';
-import { GoalReplayRecorder, sampleReplayFrame } from './replay';
+import { GOAL_REPLAY_DURATION, REPLAY_CLIP_WINDOW_SEC, GoalReplayRecorder, replayTimelineProgress, sampleReplayFrame } from './replay';
 
 test('GoalReplayRecorder captures rolling frames, locks goal clip, and smoothly interpolates playback', () => {
   const recorder = new GoalReplayRecorder();
@@ -39,4 +39,18 @@ test('GoalReplayRecorder captures rolling frames, locks goal clip, and smoothly 
 
   recorder.clear();
   assert.equal(recorder.captureClip(state), null);
+});
+
+test('extended replay timeline preserves endpoints, stays monotonic and slows the finish', () => {
+  assert.ok(GOAL_REPLAY_DURATION >= 7);
+  assert.ok(REPLAY_CLIP_WINDOW_SEC >= 5);
+  assert.equal(replayTimelineProgress(0), 0);
+  assert.equal(replayTimelineProgress(1), 1);
+  let previous = 0;
+  for (let i = 0; i <= 100; i++) {
+    const progress = replayTimelineProgress(i / 100);
+    assert.ok(progress >= previous && progress <= 1);
+    previous = progress;
+  }
+  assert.ok(replayTimelineProgress(0.4) - replayTimelineProgress(0.3) > replayTimelineProgress(0.9) - replayTimelineProgress(0.8));
 });

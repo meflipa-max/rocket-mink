@@ -8,6 +8,7 @@ import {
   GOAL_REPLAY_DURATION,
   GoalReplayRecorder,
   sampleReplayFrame,
+  replayTimelineProgress,
   type ReplayClip,
 } from '../shared/replay';
 import type {
@@ -99,6 +100,11 @@ export class GameViewportController {
   private carRigs = new Map<string, CarVisualRig>();
   private garageRig: CarVisualRig | null = null;
   private garageCustomization: CarCustomization = { ...DEFAULT_CUSTOMIZATION_BLUE };
+  private garageOrbit = 0.7;
+  private garageZoom = 6.2;
+  private garageDragX: number | null = null;
+  private boomSprites: Array<{ sprite: THREE.Sprite; age: number }> = [];
+  private replaySampleTime: number | null = null;
 
   private mode: ViewportMode = 'title';
   private localPlayerId = 'local-player';
@@ -162,7 +168,7 @@ export class GameViewportController {
       this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 2),
     );
     this.renderer.shadowMap.enabled = !this.isSoftwareGl;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
@@ -259,6 +265,7 @@ export class GameViewportController {
   }
 
   public setMode(mode: ViewportMode): void {
+    if (mode !== 'garage') this.camera.clearViewOffset();
     this.mode = mode;
     this.paused = mode === 'paused';
 
@@ -395,11 +402,15 @@ export class GameViewportController {
   public handleSimulationEvents(events: SimulationEvent[], fromLocalPred = false): void {
     for (const ev of events) {
       if (ev.type === 'ball_hit') {
-        soundEngine.playBallHit(ev.speed);
+        const dx = ev.pos.x - this.camera.position.x;
+        const dz = ev.pos.z - this.camera.position.z;
+        const distance = Math.hypot(dx, dz);
+        const right = this.camera.matrixWorld.elements;
+        soundEngine.playBallHit(ev.speed, (dx * right[0] + dz * right[2]) / Math.max(1, distance), 1 / (1 + distance / 55));
         this.particles.spawnBurst(ev.pos.x, ev.pos.y, ev.pos.z, 10, 12, '#fde047', 0.85, 0.38);
         if (ev.speed > 26) this.trauma = Math.min(1, this.trauma + 0.35);
       } else if (ev.type === 'wall_hit') {
-        soundEngine.playBallHit(ev.speed * 0.7);
+        soundEngine.playBallHit(ev.speed * 0.7, 0, 1 / (1 + Math.hypot(ev.pos.x - this.camera.position.x, ev.pos.z - this.camera.position.z) / 55), true);
       } else if (ev.type === 'jump' && ev.carId === this.localPlayerId) {
         if (this.isMultiplayer && !fromLocalPred) continue;
         soundEngine.playJump(false);
@@ -415,6 +426,7 @@ export class GameViewportController {
       } else if (ev.type === 'countdown') {
         soundEngine.playCountdown(ev.secondsLeft);
       } else if (ev.type === 'demo') {
+        this.spawnBoom(ev.pos.x, ev.pos.y, ev.pos.z);
         soundEngine.playDemoExplosion();
         this.trauma = Math.min(1, this.trauma + 0.65);
         this.particles.spawnBurst(ev.pos.x, ev.pos.y, ev.pos.z, 26, 22, '#f97316', 1.5, 0.85);
@@ -546,6 +558,7 @@ export class GameViewportController {
   };
 
   private handleMouseDown = (e: MouseEvent) => {
+    if (this.mode === 'garage' && e.button === 0 && e.target === this.renderer.domElement) this.garageDragX = e.clientX;
     if (this.mode !== 'playing') return;
     if (e.button === 2) {
       this.mouseBoost = true;
@@ -554,7 +567,20 @@ export class GameViewportController {
   };
 
   private handleMouseUp = (e: MouseEvent) => {
+    this.garageDragX = null;
     if (e.button === 2) this.mouseBoost = false;
+  };
+
+  private handleMouseMove = (e: MouseEvent) => {
+    if (this.garageDragX === null || this.mode !== 'garage') return;
+    this.garageOrbit -= (e.clientX - this.garageDragX) * 0.008;
+    this.garageDragX = e.clientX;
+  };
+
+  private handleWheel = (e: WheelEvent) => {
+    if (this.mode === 'garage' && e.target === this.renderer.domElement) {
+      this.garageZoom = clamp(this.garageZoom + e.deltaY * 0.005, 3.8, 10);
+    }
   };
 
   private handleContextMenu = (e: MouseEvent) => {
@@ -564,6 +590,8 @@ export class GameViewportController {
   private handleBlur = () => {
     this.keys.clear();
     this.mouseBoost = false;
+    this.garageDragX = null;
+    soundEngine.updateContinuous(false, 0, false);
   };
 
   private bindInputs(): void {
@@ -571,6 +599,8 @@ export class GameViewportController {
     window.addEventListener('keyup', this.handleKeyUp);
     window.addEventListener('mousedown', this.handleMouseDown);
     window.addEventListener('mouseup', this.handleMouseUp);
+    window.addEventListener('mousemove', this.handleMouseMove);
+    window.addEventListener('wheel', this.handleWheel, { passive: true });
     window.addEventListener('contextmenu', this.handleContextMenu);
     window.addEventListener('blur', this.handleBlur);
     document.addEventListener('visibilitychange', this.handleBlur);
@@ -633,6 +663,19 @@ export class GameViewportController {
 
   private update(dt: number): void {
     this.elapsed += dt;
+    for (let i = this.boomSprites.length - 1; i >= 0; i--) {
+      const boom = this.boomSprites[i];
+      boom.age += dt;
+      const scale = 1 + Math.min(1, boom.age / 0.16) * 0.3;
+      boom.sprite.scale.set(10 * scale, 5 * scale, 1);
+      boom.sprite.material.opacity = clamp((1.2 - boom.age) / 0.35, 0, 1);
+      if (boom.age > 1.2) {
+        boom.sprite.removeFromParent();
+        boom.sprite.material.map?.dispose();
+        boom.sprite.material.dispose();
+        this.boomSprites.splice(i, 1);
+      }
+    }
 
     if (this.mode === 'title') {
       // Live world stadium orbital flyover
@@ -655,12 +698,17 @@ export class GameViewportController {
     }
 
     if (this.mode === 'garage' && this.garageRig) {
-      const angle = this.elapsed * 0.45;
-      this.camera.position.set(3.5 + Math.cos(angle) * 6.2, 2.3, Math.sin(angle) * 6.2);
-      this.camera.lookAt(1.3, 0.78, 0);
-      this.camera.fov = 50;
+      const angle = this.garageOrbit;
+      const w = this.container.clientWidth;
+      const h = this.container.clientHeight;
+      const compact = w < 768;
+      const zoom = this.garageZoom * (compact ? 1.4 : 1);
+      this.camera.position.set(3.5 + Math.cos(angle) * zoom, 2.8, Math.sin(angle) * zoom);
+      this.camera.lookAt(3.5, 0.45, 0);
+      this.camera.setViewOffset(w, h, compact ? 0 : -w * 0.18, compact ? h * 0.27 : 0, w, h);
+      this.camera.fov = compact ? 56 : 50;
       this.camera.updateProjectionMatrix();
-      this.garageRig.group.rotation.y = this.elapsed * 0.25;
+      this.garageRig.group.rotation.y = 0;
       const flamePulse = 0.6 + Math.sin(this.elapsed * 14) * 0.2;
       for (const cone of this.garageRig.flameCones) {
         cone.visible = true;
@@ -736,8 +784,13 @@ export class GameViewportController {
 
     // Track phase transitions for Instant Goal Replay recording & kickoff resets
     const phase = this.activeState.phase;
-    if (this.prevPhase !== 'goal_replay' && phase === 'goal_replay') {
+    if (this.prevPhase === 'active' && phase === 'goal_scored') {
+      this.replayRecorder.record(this.activeState, this.elapsed, true);
       this.activeReplayClip = this.replayRecorder.captureClip(this.activeState);
+    }
+    if (this.prevPhase !== 'goal_replay' && phase === 'goal_replay') {
+      this.activeReplayClip ??= this.replayRecorder.captureClip(this.activeState);
+      this.replaySampleTime = null;
       soundEngine.playReplayTransition();
     } else if (this.prevPhase !== 'countdown' && phase === 'countdown') {
       this.activeReplayClip = null;
@@ -746,20 +799,21 @@ export class GameViewportController {
     }
     this.prevPhase = phase;
 
-    if (phase === 'active' || phase === 'goal_scored') {
+    if (phase === 'active') {
       this.replayRecorder.record(this.activeState, this.elapsed);
     }
 
     // Instant Goal Replay Director Playback
     if (phase === 'goal_replay' && this.activeReplayClip) {
       const progress = clamp(1 - this.activeState.phaseTimer / GOAL_REPLAY_DURATION, 0, 1);
-      const frame = sampleReplayFrame(this.activeReplayClip, progress);
+      const timeline = replayTimelineProgress(progress);
+      const frame = sampleReplayFrame(this.activeReplayClip, timeline);
       if (frame) {
+        const replayStarting = this.replaySampleTime === null;
         this.displayBallPos.set(frame.ballPos.x, frame.ballPos.y, frame.ballPos.z);
         this.ballRig.group.position.copy(this.displayBallPos);
-        this.ballRig.group.rotation.x += frame.ballAngVel.x * dt * 0.75;
-        this.ballRig.group.rotation.y += frame.ballAngVel.y * dt * 0.75;
-        this.ballRig.group.rotation.z += frame.ballAngVel.z * dt * 0.75;
+        this.rotateBall(frame.ballAngVel, this.replaySampleTime === null ? 0 : frame.t - this.replaySampleTime);
+        this.replaySampleTime = frame.t;
         this.ballRig.indicatorRing.position.set(frame.ballPos.x, 0.03, frame.ballPos.z);
         const hScale = clamp(1 - (frame.ballPos.y - 1.65) / 24, 0.35, 1.0);
         this.ballRig.indicatorRing.scale.setScalar(hScale);
@@ -795,7 +849,7 @@ export class GameViewportController {
         }
 
         // Broadcast Director Camera: Tracks Scorer -> Sweeps to Goal-Line Angle
-        if (progress < 0.72 && scorerCarFrame) {
+        if (progress < 0.60 && scorerCarFrame) {
           _q1.set(scorerCarFrame.quat.x, scorerCarFrame.quat.y, scorerCarFrame.quat.z, scorerCarFrame.quat.w);
           _v2.set(0, 0, 1).applyQuaternion(_q1).normalize();
           _v4.set(scorerCarFrame.pos.x, scorerCarFrame.pos.y, scorerCarFrame.pos.z);
@@ -807,10 +861,10 @@ export class GameViewportController {
           _v3.x = clamp(_v3.x, -ARENA_HALF_X + 2.5, ARENA_HALF_X - 2.5);
           _v3.z = clamp(_v3.z, -ARENA_HALF_Z + 2.5, ARENA_HALF_Z - 2.5);
           _v3.y = clamp(_v3.y, 2.4, ARENA_HEIGHT - 2.5);
-          this.cameraPos.lerp(_v3, clamp(9 * dt, 0, 1));
+          this.cameraPos.lerp(_v3, replayStarting ? 1 : 1 - Math.exp(-9 * dt));
           _v1.copy(this.displayBallPos).lerp(_v4, 0.35);
           _v1.y = Math.max(1.2, _v1.y + 0.5);
-          this.cameraLook.lerp(_v1, clamp(11 * dt, 0, 1));
+          this.cameraLook.lerp(_v1, replayStarting ? 1 : 1 - Math.exp(-11 * dt));
         } else {
           const scoredBlueGoal = this.activeReplayClip.goalTeam === 'orange';
           const goalZ = scoredBlueGoal ? -ARENA_HALF_Z : ARENA_HALF_Z;
@@ -820,12 +874,12 @@ export class GameViewportController {
             6.2,
             goalZ + dirInward * 18,
           );
-          this.cameraPos.lerp(_v3, clamp(7 * dt, 0, 1));
+          this.cameraPos.lerp(_v3, replayStarting ? 1 : 1 - Math.exp(-7 * dt));
           _v1.copy(this.displayBallPos);
           _v1.y = Math.max(1.2, _v1.y);
-          this.cameraLook.lerp(_v1, clamp(11 * dt, 0, 1));
+          this.cameraLook.lerp(_v1, replayStarting ? 1 : 1 - Math.exp(-11 * dt));
         }
-        this.camera.fov = lerp(this.camera.fov, 64, clamp(6 * dt, 0, 1));
+        this.camera.fov = lerp(this.camera.fov, progress > 0.65 ? 54 : 68, 1 - Math.exp(-6 * dt));
         this.camera.updateProjectionMatrix();
         this.camera.position.copy(this.cameraPos);
         this.camera.lookAt(this.cameraLook);
@@ -855,9 +909,7 @@ export class GameViewportController {
       interpFactor,
     );
     this.ballRig.group.position.copy(this.displayBallPos);
-    this.ballRig.group.rotation.x += this.activeState.ball.angVel.x * dt;
-    this.ballRig.group.rotation.y += this.activeState.ball.angVel.y * dt;
-    this.ballRig.group.rotation.z += this.activeState.ball.angVel.z * dt;
+    this.rotateBall(this.activeState.ball.angVel, dt);
 
     // Ground projection indicator ring scales cleanly with ball height
     this.ballRig.indicatorRing.position.set(this.displayBallPos.x, 0.03, this.displayBallPos.z);
@@ -943,7 +995,8 @@ export class GameViewportController {
       for (const cone of rig.flameCones) {
         cone.visible = isBoosting;
         if (isBoosting) {
-          cone.scale.set(1, 1, 0.8 + Math.random() * 0.55);
+          const surge = car.supersonic ? 1.55 : 0.8 + clamp(carSpeed / 31, 0, 1) * 0.4;
+          cone.scale.set(car.supersonic ? 1.2 : 1, car.supersonic ? 1.2 : 1, surge + Math.random() * 0.25);
         }
       }
 
@@ -1111,7 +1164,7 @@ export class GameViewportController {
         localCar.boost > 0.2 &&
         this.mode === 'playing' &&
         this.activeState.phase === 'active';
-      soundEngine.updateContinuous(this.mode === 'playing' && !this.paused, speed, isActiveBoost);
+      soundEngine.updateContinuous(this.mode === 'playing' && !this.paused && this.activeState.phase === 'active' && localCar.demolishedTimer <= 0 && !document.hidden, speed, isActiveBoost, input.throttle, localCar.onGround, input.handbrake);
     }
 
     this.stadium.update(this.elapsed, this.activeState.boostPads);
@@ -1143,6 +1196,50 @@ export class GameViewportController {
     }
   }
 
+  private rotateBall(omega: { x: number; y: number; z: number }, dt: number): void {
+    _v2.set(omega.x, omega.y, omega.z);
+    const speed = _v2.length();
+    if (speed < 1e-6 || dt <= 0) return;
+    _q2.setFromAxisAngle(_v2.multiplyScalar(1 / speed), speed * dt);
+    this.ballRig.group.quaternion.premultiply(_q2);
+  }
+
+  private spawnBoom(x: number, y: number, z: number): void {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d')!;
+    ctx.beginPath();
+    for (let i = 0; i < 24; i++) {
+      const angle = i / 24 * Math.PI * 2;
+      const radius = i % 2 === 0 ? 1 : 0.72;
+      const px = 256 + Math.cos(angle) * 248 * radius;
+      const py = 128 + Math.sin(angle) * 122 * radius;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fillStyle = '#ff7a18';
+    ctx.fill();
+    ctx.lineWidth = 9;
+    ctx.strokeStyle = '#431407';
+    ctx.stroke();
+    ctx.font = 'italic 900 100px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 12;
+    ctx.strokeText('BOOM!', 256, 137);
+    ctx.fillStyle = '#fff5b3';
+    ctx.fillText('BOOM!', 256, 137);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false, depthTest: false });
+    const sprite = new THREE.Sprite(material);
+    sprite.position.set(x, y + 3.8, z);
+    sprite.scale.set(10, 5, 1);
+    this.scene.add(sprite);
+    this.boomSprites.push({ sprite, age: 0 });
+  }
+
   public dispose(): void {
     this.disposed = true;
     cancelAnimationFrame(this.frameId);
@@ -1152,6 +1249,8 @@ export class GameViewportController {
     window.removeEventListener('keyup', this.handleKeyUp);
     window.removeEventListener('mousedown', this.handleMouseDown);
     window.removeEventListener('mouseup', this.handleMouseUp);
+    window.removeEventListener('mousemove', this.handleMouseMove);
+    window.removeEventListener('wheel', this.handleWheel);
     window.removeEventListener('contextmenu', this.handleContextMenu);
     window.removeEventListener('blur', this.handleBlur);
     document.removeEventListener('visibilitychange', this.handleBlur);
@@ -1165,6 +1264,12 @@ export class GameViewportController {
     this.stadium.dispose();
     this.ballRig.dispose();
     this.particles.dispose();
+    for (const { sprite } of this.boomSprites) {
+      sprite.removeFromParent();
+      sprite.material.map?.dispose();
+      sprite.material.dispose();
+    }
+    this.boomSprites = [];
     this.renderer.dispose();
     if (this.renderer.domElement.parentNode === this.container) {
       this.container.removeChild(this.renderer.domElement);

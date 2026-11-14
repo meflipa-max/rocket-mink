@@ -19,6 +19,8 @@ import {
   stepSimulation,
 } from './physics';
 import type { PlayerInput } from './types';
+import { dotV3, quatFromYaw, rotateVecByQuat, v3 } from './math3d';
+import { GOAL_REPLAY_DURATION, GOAL_CELEBRATION_DURATION } from './replay';
 
 test('arena has 34 boost pads (6 big, 28 small) and resolves floor & curved ramp', () => {
   const pads = createBoostPads();
@@ -136,13 +138,13 @@ test('tied score at 0:00 triggers overtime and golden goal ends the match', () =
   assert.equal(state.phase, 'goal_scored');
 
   // Advance past celebration timer -> enters instant goal_replay
-  for (let i = 0; i < 130; i++) {
+  for (let i = 0; i < Math.ceil((GOAL_CELEBRATION_DURATION + 0.1) * 60); i++) {
     stepSimulation(state, {}, 1 / 60);
   }
   assert.equal(state.phase, 'goal_replay');
 
   // Advance past goal replay -> golden goal ends match
-  for (let i = 0; i < 290; i++) {
+  for (let i = 0; i < Math.ceil((GOAL_REPLAY_DURATION + 0.1) * 60); i++) {
     stepSimulation(state, {}, 1 / 60);
   }
   assert.equal(state.phase, 'ended');
@@ -275,6 +277,169 @@ test('non-authoritative client prediction does not drift match clock or trigger 
   assert.equal(state.clockSeconds, 120.5);
   assert.equal(state.isOvertime, false);
   assert.equal(state.phase, 'active');
+});
+
+test('ball coasts progressively with the same resistance at 30, 60, 120 and 240 Hz', () => {
+  const distances: number[] = [];
+  const speeds: number[] = [];
+  for (const hz of [30, 60, 120, 240]) {
+    const state = createMatchState('freeplay', 'dfh_night', []);
+    state.ball.pos = v3(-15, BALL_RADIUS, 0);
+    state.ball.vel = v3(3, 0, 0);
+    let previous = 3;
+    for (let i = 0; i < hz * 8; i++) {
+      stepSimulation(state, {}, 1 / hz);
+      assert.ok(state.ball.vel.x > 0 && state.ball.vel.x <= previous, 'No stop threshold or speed jumps');
+      assert.ok(previous - state.ball.vel.x < 0.03, 'No per-contact sand friction');
+      assert.ok(Math.abs(state.ball.pos.y - BALL_RADIUS) < 0.001, 'Resting ball must not micro-bounce');
+      previous = state.ball.vel.x;
+    }
+    assert.ok(state.ball.angVel.z < 0, 'Rotation follows rolling direction');
+    distances.push(state.ball.pos.x);
+    speeds.push(state.ball.vel.x);
+  }
+  assert.ok(Math.max(...speeds) - Math.min(...speeds) < 0.001);
+  assert.ok(Math.max(...distances) - Math.min(...distances) < 0.08);
+  assert.ok(speeds[0] > 0.35 && speeds[0] < 0.4, 'Ball should still be gently rolling after eight seconds');
+});
+
+test('backflip direction, nose rotation and additive impulse follow every car heading', () => {
+  for (const yaw of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
+    for (const initialSpeed of [-5, 0, 10]) {
+      const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'Backflip', team: 'blue' }]);
+      const car = state.cars[0];
+      car.pos = v3(0, 8, 0);
+      car.onGround = false;
+      car.airTimeSinceJump = 0.15;
+      car.quat = quatFromYaw(yaw);
+      const forward = rotateVecByQuat(v3(0, 0, 1), car.quat);
+      car.vel = v3(forward.x * initialSpeed, 0, forward.z * initialSpeed);
+      state.ball.pos = v3(30, BALL_RADIUS, 30);
+      const events = stepSimulation(state, { p1: { ...NEUTRAL_INPUT, throttle: -1, pitch: 1, jump: true } }, 1 / 60);
+      assert.ok(events.some((e) => e.type === 'flip'));
+      assert.ok(car.flipAxis.x < -0.99, 'Backflip rotates around negative local X');
+      assert.ok(rotateVecByQuat(v3(0, 0, 1), car.quat).y > 0.1, 'Nose must rise during backflip');
+      assert.ok(Math.abs(dotV3(car.vel, forward) - (initialSpeed - 12.2)) < 0.01, 'Impulse must preserve pre-existing momentum');
+      assert.equal(car.hasDoubleJump, false);
+      const velocity = { ...car.vel };
+      stepSimulation(state, { p1: { ...NEUTRAL_INPUT, throttle: -1, pitch: 1, jump: true } }, 1 / 60);
+      assert.ok(Math.abs(car.vel.x - velocity.x) < 0.01 && Math.abs(car.vel.z - velocity.z) < 0.01, 'Holding jump cannot repeat the dodge');
+    }
+  }
+});
+
+test('backflip rear bumper strikes the ball backwards and credits the player', () => {
+  const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'Backflip', team: 'blue' }]);
+  const car = state.cars[0];
+  car.pos = v3(0, 3, 0);
+  car.onGround = false;
+  car.airTimeSinceJump = 0.15;
+  car.quat = quatFromYaw(0);
+  state.ball.pos = v3(0, 3, -3);
+  const events = stepSimulation(state, { p1: { ...NEUTRAL_INPUT, throttle: -1, pitch: 1, jump: true } }, 1 / 60);
+  assert.ok(events.some((e) => e.type === 'ball_hit'));
+  assert.ok(state.ball.vel.z < -10, 'Rear strike must send the ball behind the car');
+  assert.equal(state.ball.lastTouchPlayerId, 'p1');
+  assert.ok(Math.hypot(state.ball.vel.x, state.ball.vel.y, state.ball.vel.z) <= MAX_BALL_SPEED);
+});
+
+test('backflip completes exactly one turn at different frame rates and can be cancelled', () => {
+  for (const hz of [30, 60, 120]) {
+    const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'Flip', team: 'blue' }]);
+    const car = state.cars[0];
+    car.pos = v3(0, 10, -30);
+    car.onGround = false;
+    car.airTimeSinceJump = 0.15;
+    car.quat = quatFromYaw(0);
+    state.ball.pos = v3(30, BALL_RADIUS, 30);
+    stepSimulation(state, { p1: { ...NEUTRAL_INPUT, throttle: -1, jump: true } }, 1 / hz);
+    for (let i = 0; i < Math.ceil(0.4 * hz); i++) stepSimulation(state, {}, 1 / hz);
+    assert.equal(car.isFlipping, false);
+    assert.ok(Math.abs(car.quat.w) > 0.9999, `Flip should finish upright at ${hz} Hz`);
+    assert.ok(car.vel.z < -12, 'Rotation completion must preserve backwards momentum');
+  }
+  const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'Cancel', team: 'blue' }]);
+  const car = state.cars[0];
+  car.pos = v3(0, 10, -30);
+  car.onGround = false;
+  car.airTimeSinceJump = 0.15;
+  car.quat = quatFromYaw(0);
+  state.ball.pos = v3(30, BALL_RADIUS, 30);
+  stepSimulation(state, { p1: { ...NEUTRAL_INPUT, throttle: -1, jump: true } }, 1 / 60);
+  for (let i = 0; i < 24; i++) stepSimulation(state, { p1: { ...NEUTRAL_INPUT, pitch: -1 } }, 1 / 60);
+  assert.equal(car.isFlipping, false);
+  assert.ok(Math.abs(car.quat.x) > 0.4, 'Opposite pitch input cancels the backflip rotation');
+  assert.ok(car.vel.z < -12, 'Flip cancel must keep the dodge impulse');
+});
+
+test('boost has a stronger high-speed surge and supersonic only applies to forward travel', () => {
+  const acceleration: number[] = [];
+  for (const speed of [10, 24]) {
+    const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'Boost', team: 'blue' }]);
+    const car = state.cars[0];
+    car.pos = v3(0, 8, -30);
+    car.onGround = false;
+    car.quat = quatFromYaw(0);
+    car.vel = v3(0, 0, speed);
+    stepSimulation(state, { p1: { ...NEUTRAL_INPUT, boost: true } }, 1 / 60);
+    acceleration.push((car.vel.z - speed) * 60);
+  }
+  assert.ok(acceleration[1] > acceleration[0] + 8);
+  for (const velocity of [v3(0, -30, 0), v3(30, 0, 0), v3(0, 0, -30)]) {
+    const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'No demo', team: 'blue' }]);
+    state.cars[0].pos = v3(0, 12, -30);
+    state.cars[0].onGround = false;
+    state.cars[0].quat = quatFromYaw(0);
+    state.cars[0].vel = velocity;
+    stepSimulation(state, {}, 1 / 60);
+    assert.equal(state.cars[0].supersonic, false);
+  }
+});
+
+test('demolition requires a fast frontal closing impact, with no side-swipe or teammate demos', () => {
+  const cases = [
+    { speed: 30, side: 0, victimSpeed: 0, team: 'orange' as const, demo: true },
+    { speed: 24, side: 0, victimSpeed: 0, team: 'orange' as const, demo: false },
+    { speed: 30, side: 1.9, victimSpeed: 0, team: 'orange' as const, demo: false },
+    { speed: 30, side: 0, victimSpeed: 28, team: 'orange' as const, demo: false },
+    { speed: 30, side: 0, victimSpeed: 0, team: 'blue' as const, demo: false },
+  ];
+  for (const scenario of cases) {
+    const state = createMatchState('freeplay', 'dfh_night', [{ id: 'a', name: 'Attacker', team: 'blue' }, { id: 'b', name: 'Victim', team: scenario.team }]);
+    const [a, b] = state.cars;
+    a.pos = v3(0, CAR_RIDE_HEIGHT, -30);
+    b.pos = v3(scenario.side, CAR_RIDE_HEIGHT, -27.5);
+    a.quat = b.quat = quatFromYaw(0);
+    a.vel = v3(0, 0, scenario.speed);
+    b.vel = v3(0, 0, scenario.victimSpeed);
+    const events = stepSimulation(state, {}, 1 / 60);
+    assert.equal(events.some((e) => e.type === 'demo'), scenario.demo, JSON.stringify(scenario));
+    assert.equal(b.demolishedTimer > 0, scenario.demo);
+  }
+});
+
+test('shot and save notifications correspond to actual goal-directed actions', () => {
+  for (const x of [0, 23]) {
+    const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'Striker', team: 'blue' }]);
+    state.cars[0].pos = v3(x, CAR_RIDE_HEIGHT, ARENA_HALF_Z - 7);
+    state.cars[0].quat = quatFromYaw(0);
+    state.cars[0].vel = v3(0, 0, 31);
+    state.ball.pos = v3(x, BALL_RADIUS, ARENA_HALF_Z - 3.5);
+    const events = stepSimulation(state, {}, 1 / 60);
+    assert.ok(events.some((e) => e.type === 'ball_hit'));
+    assert.equal(events.some((e) => e.type === 'shot'), x === 0, 'Wide shots must not get a shot-on-goal notification');
+  }
+  for (const incoming of [-15, 0]) {
+    const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'Keeper', team: 'blue' }]);
+    state.cars[0].pos = v3(0, CAR_RIDE_HEIGHT, -ARENA_HALF_Z + 2);
+    state.cars[0].quat = quatFromYaw(0);
+    state.cars[0].vel = v3(0, 0, 20);
+    state.ball.pos = v3(0, BALL_RADIUS, -ARENA_HALF_Z + 5);
+    state.ball.vel = v3(0, 0, incoming);
+    const events = stepSimulation(state, {}, 1 / 60);
+    assert.ok(events.some((e) => e.type === 'ball_hit'));
+    assert.equal(events.some((e) => e.type === 'save'), incoming < 0, 'A stationary ball is not a save');
+  }
 });
 
 

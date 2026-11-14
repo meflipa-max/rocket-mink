@@ -80,14 +80,20 @@ const WHEELS: Array<{ id: WheelStyle; label: string }> = [
   { id: 'cyber', label: 'Cyber Neon' },
 ];
 
+const GARAGE_PRESETS: Array<CarCustomization & { label: string }> = [
+  { label: 'Rally', primaryColor: '#14532d', accentColor: '#facc15', boostColor: '#facc15', body: 'fennec', decal: 'stripes', wheelStyle: 'sport', paintFinish: 'matte', topper: 'none', underglow: false, spoiler: 'ducktail', wheelColor: '#facc15' },
+  { label: 'Midnight', primaryColor: '#172554', accentColor: '#22d3ee', boostColor: '#22d3ee', body: 'dominus', decal: 'cyber', wheelStyle: 'cyber', paintFinish: 'anodized', topper: 'fin', underglow: true, spoiler: 'sport', wheelColor: '#22d3ee' },
+  { label: 'Supernova', primaryColor: '#9f1239', accentColor: '#f8fafc', boostColor: '#fb923c', body: 'octane', decal: 'flames', wheelStyle: 'turbine', paintFinish: 'gloss', topper: 'halo', underglow: true, spoiler: 'sport', wheelColor: '#f8fafc' },
+];
+
 export function GarageModal({ customization, onChange, onClose }: GarageModalProps) {
   const paintFinish = customization.paintFinish ?? 'metallic';
   const topper = customization.topper ?? 'none';
   const underglow = Boolean(customization.underglow);
 
   return (
-    <div className="fixed inset-0 z-20 pointer-events-none flex items-center p-4 md:p-8">
-      <div className="pointer-events-auto w-full max-w-md max-h-[88vh] overflow-y-auto bg-[#0b101c]/95 border border-white/15 rounded-xl p-5 shadow-2xl">
+    <div className="fixed inset-0 z-20 pointer-events-none flex items-end md:items-center p-4 md:p-8">
+      <div className="pointer-events-auto w-full max-w-md max-h-[55vh] md:max-h-[88vh] overflow-y-auto bg-[#0b101c]/95 border border-white/15 rounded-xl p-5 shadow-2xl">
         <div className="flex items-center justify-between gap-2 mb-4 sticky top-0 bg-[#0b101c]/95 pb-2 border-b border-white/10 z-10">
           <h2 className="font-display text-xl font-bold text-white">Garage Auto</h2>
           <div className="flex items-center gap-2">
@@ -109,6 +115,14 @@ export function GarageModal({ customization, onChange, onClose }: GarageModalPro
         </div>
 
         {/* Chassis */}
+        <div className="mb-5">
+          <p className="text-xs text-slate-400 mb-2">Trascina l’auto per ruotare · rotella per zoomare. Modifiche salvate automaticamente.</p>
+          <div className="grid grid-cols-3 gap-2">
+            {GARAGE_PRESETS.map(({ label, ...preset }) => (
+              <button type="button" key={label} onClick={() => onChange(preset)} className="rounded-lg border border-white/15 bg-white/5 py-2 text-xs font-bold text-white hover:bg-white/15 cursor-pointer">{label}</button>
+            ))}
+          </div>
+        </div>
         <div className="mb-4">
           <span className="block text-xs font-semibold text-slate-300 mb-1.5">Telaio</span>
           <div className="grid grid-cols-3 gap-1.5">
@@ -313,6 +327,18 @@ export function GarageModal({ customization, onChange, onClose }: GarageModalPro
         </div>
 
         {/* Neon Underglow */}
+        <div className="mb-4 flex items-center justify-between">
+          <label htmlFor="wheel-color" className="text-xs font-semibold text-slate-300">Colore cerchioni indipendente</label>
+          <input id="wheel-color" type="color" value={customization.wheelColor ?? customization.accentColor} onChange={(e) => onChange({ ...customization, wheelColor: e.target.value })} className="w-10 h-8 cursor-pointer rounded bg-transparent" />
+        </div>
+        <div className="mb-4">
+          <label htmlFor="spoiler-style" className="block text-xs font-semibold text-slate-300 mb-2">Spoiler</label>
+          <select id="spoiler-style" value={customization.spoiler ?? 'sport'} onChange={(e) => onChange({ ...customization, spoiler: e.target.value as CarCustomization['spoiler'] })} className="w-full rounded-lg border border-white/15 bg-slate-900 p-2 text-xs text-white">
+            <option value="sport">Ala sportiva</option>
+            <option value="ducktail">Ducktail compatto</option>
+            <option value="none">Senza spoiler</option>
+          </select>
+        </div>
         <div className="flex items-center justify-between pt-2 border-t border-white/10">
           <span className="text-xs font-semibold text-slate-300">Neon Sottoscocca</span>
           <button

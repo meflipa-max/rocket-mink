@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import type { CarCustomization } from '../shared/types';
 
 export interface CarVisualRig {
@@ -88,6 +89,7 @@ function createDecalTexture(
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = 8;
   return tex;
 }
 
@@ -171,7 +173,7 @@ function createExtrudedHull(body: CarCustomization['body']): THREE.BufferGeometr
     bevelEnabled: true,
     bevelThickness: 0.14,
     bevelSize: 0.09,
-    bevelSegments: 2,
+    bevelSegments: 4,
   });
 
   geo.center();
@@ -259,6 +261,12 @@ export function buildCarVisualRig(
     metalness: 0.88,
     roughness: 0.18,
   });
+  const wheelMat = new THREE.MeshStandardMaterial({
+    color: customization.wheelColor ?? customization.accentColor,
+    metalness: 0.72,
+    roughness: 0.24,
+  });
+  const wheelGlowMat = new THREE.MeshBasicMaterial({ color: customization.wheelColor ?? customization.accentColor });
 
   const disposableGeos: THREE.BufferGeometry[] = [];
   const disposableMats: THREE.Material[] = [
@@ -268,6 +276,8 @@ export function buildCarVisualRig(
     carbonMat,
     glassMat,
     chromeMat,
+    wheelMat,
+    wheelGlowMat,
   ];
   const disposableTex: THREE.Texture[] = [decalTex];
 
@@ -289,7 +299,7 @@ export function buildCarVisualRig(
   bodyGroup.add(splitterMesh);
 
   // --- Part 3: Tinted Windshield & Cabin Canopy ---
-  const canopyGeo = new THREE.BoxGeometry(1.16, 0.28, customization.body === 'fennec' ? 1.18 : 1.18);
+  const canopyGeo = new RoundedBoxGeometry(1.16, 0.28, 1.18, 3, 0.08);
   disposableGeos.push(canopyGeo);
   const canopyMesh = new THREE.Mesh(canopyGeo, glassMat);
   canopyMesh.position.set(
@@ -304,13 +314,15 @@ export function buildCarVisualRig(
   const wingY =
     customization.body === 'fennec' ? 0.74 : customization.body === 'octane' ? 0.72 : 0.56;
   const wingZ = customization.body === 'fennec' ? -1.42 : -1.55;
-  const wingGeo = new THREE.BoxGeometry(1.78, 0.08, customization.body === 'fennec' ? 0.34 : 0.42);
+  const ducktail = customization.spoiler === 'ducktail';
+  const wingGeo = new RoundedBoxGeometry(1.78, ducktail ? 0.16 : 0.08, ducktail ? 0.24 : 0.42, 2, 0.035);
   disposableGeos.push(wingGeo);
   const wingBlade = new THREE.Mesh(wingGeo, accentMat);
-  wingBlade.position.set(0, wingY, wingZ);
+  wingBlade.position.set(0, ducktail ? wingY - 0.22 : wingY, wingZ);
   wingBlade.rotation.x = -0.16;
   wingBlade.castShadow = !isSoftwareGl;
   bodyGroup.add(wingBlade);
+  wingBlade.visible = customization.spoiler !== 'none';
 
   const strutGeo = new THREE.BoxGeometry(0.08, customization.body === 'fennec' ? 0.22 : 0.36, 0.22);
   disposableGeos.push(strutGeo);
@@ -319,6 +331,7 @@ export function buildCarVisualRig(
     strut.position.set(sx, wingY - 0.14, wingZ + 0.05);
     strut.rotation.x = -0.2;
     bodyGroup.add(strut);
+    strut.visible = customization.spoiler !== 'none' && !ducktail;
   }
 
   // --- Part 5: Side Accent Skirts ---
@@ -440,7 +453,7 @@ export function buildCarVisualRig(
   }
 
   // --- Part 8-11: 4 Articulated Wheels (4 Distinct Rim Styles) ---
-  const tireGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.3, 18);
+  const tireGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.3, 28);
   tireGeo.rotateZ(Math.PI / 2);
   const rimGeo = new THREE.CylinderGeometry(0.24, 0.24, 0.31, 14);
   rimGeo.rotateZ(Math.PI / 2);
@@ -460,12 +473,7 @@ export function buildCarVisualRig(
 
   const wheelPivots: THREE.Group[] = [];
   const wheelMeshes: THREE.Group[] = [];
-  const rimMat =
-    customization.wheelStyle === 'aero'
-      ? accentMat
-      : customization.wheelStyle === 'cyber'
-        ? carbonMat
-        : chromeMat;
+  const rimMat = customization.wheelStyle === 'cyber' ? carbonMat : wheelMat;
 
   for (const [wx, wy, wz] of wheelPositions) {
     const pivot = new THREE.Group();
@@ -481,18 +489,18 @@ export function buildCarVisualRig(
 
     const hub = new THREE.Mesh(
       hubGeo,
-      customization.wheelStyle === 'cyber' ? emissiveAccentMat : accentMat,
+      customization.wheelStyle === 'cyber' ? wheelGlowMat : wheelMat,
     );
     wheel.add(hub);
 
     if (customization.wheelStyle === 'cyber') {
       const sign = wx > 0 ? 1 : -1;
-      const ring = new THREE.Mesh(ringGeo, emissiveAccentMat);
+      const ring = new THREE.Mesh(ringGeo, wheelGlowMat);
       ring.position.x = sign * 0.155;
       wheel.add(ring);
     } else if (customization.wheelStyle === 'turbine') {
       for (let s = 0; s < 6; s++) {
-        const blade = new THREE.Mesh(spokeGeo, accentMat);
+        const blade = new THREE.Mesh(spokeGeo, wheelMat);
         blade.rotation.x = (s * Math.PI) / 6;
         wheel.add(blade);
       }
@@ -503,7 +511,7 @@ export function buildCarVisualRig(
       wheel.add(ring);
     } else {
       for (let s = 0; s < 5; s++) {
-        const spoke = new THREE.Mesh(spokeGeo, chromeMat);
+        const spoke = new THREE.Mesh(spokeGeo, wheelMat);
         spoke.rotation.x = (s * Math.PI) / 5;
         wheel.add(spoke);
       }

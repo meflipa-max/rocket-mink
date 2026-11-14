@@ -58,6 +58,7 @@ export function MatchHud({
   onSkipReplay,
 }: MatchHudProps) {
   const isReplay = hud.phase === 'goal_replay';
+  const action = [...notifications].reverse().find((n) => n.highlight);
   const replayProgress = isReplay
     ? Math.max(0, Math.min(1, 1 - hud.phaseTimer / GOAL_REPLAY_DURATION))
     : 0;
@@ -75,9 +76,17 @@ export function MatchHud({
 
   return (
     <div className="fixed inset-0 z-10 pointer-events-none select-none">
+      {action && !isReplay && hud.phase === 'active' && (
+        <div key={action.id} role="status" className="action-callout fixed top-[22%] left-1/2 -translate-x-1/2 text-center hud-text-shadow">
+          <div className={`font-display font-black italic tracking-wider text-3xl md:text-4xl ${action.kind === 'demo' ? 'text-orange-300' : 'text-amber-200'}`}>{action.title}</div>
+          {action.points && <div className="text-xl font-bold text-white">+{action.points}</div>}
+          <div className="mt-1 text-xs font-semibold text-white/80">{action.subtitle}</div>
+        </div>
+      )}
       {/* Broadcast Cinema Bars & Replay Badge */}
       {isReplay && (
         <>
+          <div className="replay-vignette fixed inset-0" />
           <div className="fixed inset-x-0 top-0 h-7 bg-black/80 border-b border-white/10" />
           <div className="fixed inset-x-0 bottom-0 h-7 bg-black/80 border-t border-white/10" />
           <div
@@ -97,6 +106,7 @@ export function MatchHud({
                 {hud.lastGoalTeam === 'blue' ? 'BLU' : 'ARANCIONE'}
               </span>
             </div>
+            <div className="text-[10px] tracking-widest text-sky-200">{replayProgress > 0.65 ? 'RALLENTATORE' : 'AZIONE COMPLETA'}</div>
             <div className="text-xs text-slate-200 font-semibold">
               {hud.lastGoalScorer || 'Squadra'} ·{' '}
               <span className="font-mono-nums text-amber-300">{hud.lastGoalSpeedKph} km/h</span>
