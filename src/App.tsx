@@ -285,6 +285,13 @@ export default function App() {
         setChatMessages((prev) => [...prev.slice(-3), msg]);
       }
     };
+    ctrl.onSkipReplay = () => {
+      if (isMultiplayerRef.current && socketRef.current?.connected) {
+        socketRef.current.emit('replay:skip');
+      } else {
+        ctrl.skipGoalReplayOffline();
+      }
+    };
 
     // ?autostart=1 skips straight to live gameplay
     const params = new URLSearchParams(window.location.search);
@@ -617,6 +624,7 @@ export default function App() {
           roomCode={currentRoom?.code ?? null}
           chatMessages={chatMessages}
           notifications={notifications}
+          canSkipReplay={!isMultiplayerMatch || currentRoom?.hostId === socketId}
           onToggleMute={() => setMuted(soundEngine.toggleMute())}
           onTogglePause={() => {
             if (screenState === 'playing') {
@@ -646,6 +654,13 @@ export default function App() {
                   timestamp: Date.now(),
                 },
               ]);
+            }
+          }}
+          onSkipReplay={() => {
+            if (isMultiplayerMatch && socketRef.current?.connected) {
+              socketRef.current.emit('replay:skip');
+            } else {
+              controllerRef.current?.skipGoalReplayOffline();
             }
           }}
         />

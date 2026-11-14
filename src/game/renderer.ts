@@ -3,7 +3,13 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { ARENA_HALF_X, ARENA_HALF_Z, ARENA_HEIGHT, CAR_RIDE_HEIGHT, GOAL_HEIGHT } from '../shared/arena';
 import { clamp, lerp } from '../shared/math3d';
 import { reconcilePredictedSnapshot } from '../shared/netSnapshot';
-import { NEUTRAL_INPUT, stepSimulation, type SimulationEvent } from '../shared/physics';
+import { NEUTRAL_INPUT, skipGoalReplay, stepSimulation, type SimulationEvent } from '../shared/physics';
+import {
+  GOAL_REPLAY_DURATION,
+  GoalReplayRecorder,
+  sampleReplayFrame,
+  type ReplayClip,
+} from '../shared/replay';
 import type {
   ArenaId,
   CarCustomization,
@@ -128,10 +134,17 @@ export class GameViewportController {
   public onGoalMarkers?: (markers: GoalMarkerProjection[]) => void;
   public onPauseToggle?: () => void;
   public onQuickChatKey?: (slot: number) => void;
+  public onSkipReplay?: () => void;
 
   private hudAccum = 0;
   private inputSendAccum = 0;
   private lastNetPacketMs = 0;
+  private replayRecorder = new GoalReplayRecorder();
+  private activeReplayClip: ReplayClip | null = null;
+  private prevPhase: GameStateSnapshot['phase'] = 'countdown';
+  private wasLocalSupersonic = false;
+  private wasLocalOnGround = true;
+  private prevLocalVelY = 0;
   private resizeObserver: ResizeObserver;
 
   constructor(container: HTMLElement) {
@@ -308,6 +321,12 @@ export class GameViewportController {
   public startLocalMatch(snapshot: GameStateSnapshot, localId: string): void {
     this.isMultiplayer = false;
     this.localPlayerId = localId;
+    this.replayRecorder.clear();
+    this.activeReplayClip = null;
+    this.prevPhase = snapshot.phase;
+    this.wasLocalSupersonic = false;
+    this.wasLocalOnGround = true;
+    this.prevLocalVelY = 0;
     this.activeState = structuredClone(snapshot);
     this.targetNetState = null;
     this.stadium.setArenaTheme(snapshot.arenaId);
@@ -321,12 +340,30 @@ export class GameViewportController {
     this.isMultiplayer = true;
     this.localPlayerId = localId;
     this.lastNetPacketMs = performance.now();
+    this.replayRecorder.clear();
+    this.activeReplayClip = null;
+    this.prevPhase = snapshot.phase;
+    this.wasLocalSupersonic = false;
+    this.wasLocalOnGround = true;
+    this.prevLocalVelY = 0;
     this.activeState = structuredClone(snapshot);
     this.targetNetState = structuredClone(snapshot);
     this.stadium.setArenaTheme(snapshot.arenaId);
     this.syncCarRigsFromState(this.activeState);
     this.snapCameraBehindLocalCar();
     this.setMode('playing');
+    this.emitHudNow();
+  }
+
+  public skipGoalReplayOffline(): void {
+    if (this.isMultiplayer || !this.activeState) return;
+    const evs = skipGoalReplay(this.activeState);
+    if (evs.length > 0) this.handleSimulationEvents(evs);
+    if (this.activeState.phase === 'countdown') {
+      this.activeReplayClip = null;
+      this.replayRecorder.clear();
+      this.snapCameraBehindLocalCar();
+    }
     this.emitHudNow();
   }
 
@@ -373,6 +410,8 @@ export class GameViewportController {
         this.particles.spawnBurst(ev.pos.x, ev.pos.y, ev.pos.z, 10, 9, '#38bdf8', 0.75, 0.35);
       } else if (ev.type === 'boost_pickup' && ev.carId === this.localPlayerId) {
         soundEngine.playBoostPickup(ev.isBig);
+      } else if (ev.type === 'save') {
+        soundEngine.playSave();
       } else if (ev.type === 'countdown') {
         soundEngine.playCountdown(ev.secondsLeft);
       } else if (ev.type === 'demo') {
@@ -466,6 +505,11 @@ export class GameViewportController {
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
     if (this.mode === 'playing') {
+      if (e.code === 'Space' && this.activeState?.phase === 'goal_replay') {
+        e.preventDefault();
+        this.onSkipReplay?.();
+        return;
+      }
       if (e.code === 'KeyY' || e.code === 'KeyC') {
         this.toggleBallCam();
         return;
@@ -674,6 +718,8 @@ export class GameViewportController {
               this.handleSimulationEvents([ev], true);
             }
           }
+        } else if (this.activeState.phase === 'goal_replay') {
+          this.activeState.phaseTimer = Math.max(0, this.activeState.phaseTimer - dt);
         }
       } else {
         // Offline local simulation
@@ -686,6 +732,116 @@ export class GameViewportController {
           this.handleSimulationEvents(events);
         }
       }
+    }
+
+    // Track phase transitions for Instant Goal Replay recording & kickoff resets
+    const phase = this.activeState.phase;
+    if (this.prevPhase !== 'goal_replay' && phase === 'goal_replay') {
+      this.activeReplayClip = this.replayRecorder.captureClip(this.activeState);
+      soundEngine.playReplayTransition();
+    } else if (this.prevPhase !== 'countdown' && phase === 'countdown') {
+      this.activeReplayClip = null;
+      this.replayRecorder.clear();
+      this.snapCameraBehindLocalCar();
+    }
+    this.prevPhase = phase;
+
+    if (phase === 'active' || phase === 'goal_scored') {
+      this.replayRecorder.record(this.activeState, this.elapsed);
+    }
+
+    // Instant Goal Replay Director Playback
+    if (phase === 'goal_replay' && this.activeReplayClip) {
+      const progress = clamp(1 - this.activeState.phaseTimer / GOAL_REPLAY_DURATION, 0, 1);
+      const frame = sampleReplayFrame(this.activeReplayClip, progress);
+      if (frame) {
+        this.displayBallPos.set(frame.ballPos.x, frame.ballPos.y, frame.ballPos.z);
+        this.ballRig.group.position.copy(this.displayBallPos);
+        this.ballRig.group.rotation.x += frame.ballAngVel.x * dt * 0.75;
+        this.ballRig.group.rotation.y += frame.ballAngVel.y * dt * 0.75;
+        this.ballRig.group.rotation.z += frame.ballAngVel.z * dt * 0.75;
+        this.ballRig.indicatorRing.position.set(frame.ballPos.x, 0.03, frame.ballPos.z);
+        const hScale = clamp(1 - (frame.ballPos.y - 1.65) / 24, 0.35, 1.0);
+        this.ballRig.indicatorRing.scale.setScalar(hScale);
+
+        let scorerCarFrame =
+          frame.cars.find((c) => c.id === this.activeReplayClip?.scorerId) || frame.cars[0];
+        for (const rCar of frame.cars) {
+          const rig = this.carRigs.get(rCar.id);
+          if (!rig) continue;
+          rig.group.visible = !rCar.demolished;
+          rig.contactShadow.visible = !rCar.demolished && (rCar.onGround || rCar.pos.y < 10);
+          if (rCar.demolished) continue;
+          rig.group.position.set(rCar.pos.x, rCar.pos.y, rCar.pos.z);
+          rig.group.quaternion.set(rCar.quat.x, rCar.quat.y, rCar.quat.z, rCar.quat.w);
+          for (let i = 0; i < 4; i++) {
+            if (i < 2) rig.wheelPivots[i].rotation.y = rCar.steerAngle;
+            rig.wheelMeshes[i].rotation.x = rCar.wheelSpin;
+          }
+          if (rCar.onGround) {
+            _v4.set(rCar.groundNormal.x, rCar.groundNormal.y, rCar.groundNormal.z).normalize();
+            rig.contactShadow.position
+              .copy(rig.group.position)
+              .addScaledVector(_v4, -(CAR_RIDE_HEIGHT - 0.03));
+            rig.contactShadow.quaternion.setFromUnitVectors(_up, _v4);
+          } else {
+            rig.contactShadow.position.set(rCar.pos.x, 0.025, rCar.pos.z);
+            rig.contactShadow.quaternion.identity();
+          }
+          for (const cone of rig.flameCones) {
+            cone.visible = rCar.supersonic;
+            if (rCar.supersonic) cone.scale.set(1, 1, 0.9 + Math.random() * 0.45);
+          }
+        }
+
+        // Broadcast Director Camera: Tracks Scorer -> Sweeps to Goal-Line Angle
+        if (progress < 0.72 && scorerCarFrame) {
+          _q1.set(scorerCarFrame.quat.x, scorerCarFrame.quat.y, scorerCarFrame.quat.z, scorerCarFrame.quat.w);
+          _v2.set(0, 0, 1).applyQuaternion(_q1).normalize();
+          _v4.set(scorerCarFrame.pos.x, scorerCarFrame.pos.y, scorerCarFrame.pos.z);
+          _v3
+            .copy(_v4)
+            .addScaledVector(_v2, -9.8)
+            .addScaledVector(_up, 4.1);
+          _v3.x += (scorerCarFrame.pos.x >= 0 ? -4.2 : 4.2);
+          _v3.x = clamp(_v3.x, -ARENA_HALF_X + 2.5, ARENA_HALF_X - 2.5);
+          _v3.z = clamp(_v3.z, -ARENA_HALF_Z + 2.5, ARENA_HALF_Z - 2.5);
+          _v3.y = clamp(_v3.y, 2.4, ARENA_HEIGHT - 2.5);
+          this.cameraPos.lerp(_v3, clamp(9 * dt, 0, 1));
+          _v1.copy(this.displayBallPos).lerp(_v4, 0.35);
+          _v1.y = Math.max(1.2, _v1.y + 0.5);
+          this.cameraLook.lerp(_v1, clamp(11 * dt, 0, 1));
+        } else {
+          const scoredBlueGoal = this.activeReplayClip.goalTeam === 'orange';
+          const goalZ = scoredBlueGoal ? -ARENA_HALF_Z : ARENA_HALF_Z;
+          const dirInward = scoredBlueGoal ? 1 : -1;
+          _v3.set(
+            this.displayBallPos.x >= 0 ? -15 : 15,
+            6.2,
+            goalZ + dirInward * 18,
+          );
+          this.cameraPos.lerp(_v3, clamp(7 * dt, 0, 1));
+          _v1.copy(this.displayBallPos);
+          _v1.y = Math.max(1.2, _v1.y);
+          this.cameraLook.lerp(_v1, clamp(11 * dt, 0, 1));
+        }
+        this.camera.fov = lerp(this.camera.fov, 64, clamp(6 * dt, 0, 1));
+        this.camera.updateProjectionMatrix();
+        this.camera.position.copy(this.cameraPos);
+        this.camera.lookAt(this.cameraLook);
+      }
+
+      soundEngine.updateContinuous(false, 0, false);
+      this.onNameplates?.([]);
+      this.onGoalMarkers?.([]);
+      this.stadium.update(this.elapsed, this.activeState.boostPads);
+      this.particles.update(dt);
+      this.hudAccum += dt;
+      if (this.hudAccum >= 1 / 15) {
+        this.hudAccum = 0;
+        this.emitHudNow();
+      }
+      return;
     }
 
     // Visual interpolation & boost particle emission
@@ -935,6 +1091,19 @@ export class GameViewportController {
         this.trauma = Math.max(0, this.trauma - 1.8 * dt);
       }
       this.camera.lookAt(this.cameraLook);
+
+      // Audio edges: Supersonic boom & hard landing suspension thump
+      if (this.mode === 'playing' && !this.paused && this.activeState.phase === 'active') {
+        if (localCar.supersonic && !this.wasLocalSupersonic) {
+          soundEngine.playSupersonic();
+        }
+        if (localCar.onGround && !this.wasLocalOnGround && Math.abs(this.prevLocalVelY) > 4.5) {
+          soundEngine.playLanding(Math.abs(this.prevLocalVelY));
+        }
+      }
+      this.wasLocalSupersonic = localCar.supersonic;
+      this.wasLocalOnGround = localCar.onGround;
+      this.prevLocalVelY = localCar.vel.y;
 
       // Update continuous engine & boost audio
       const isActiveBoost =

@@ -15,6 +15,7 @@ import {
   SUPERSONIC_THRESHOLD,
   createMatchState,
   resetKickoff,
+  skipGoalReplay,
   stepSimulation,
 } from './physics';
 import type { PlayerInput } from './types';
@@ -134,14 +135,23 @@ test('tied score at 0:00 triggers overtime and golden goal ends the match', () =
   assert.equal(state.scoreOrange, 1);
   assert.equal(state.phase, 'goal_scored');
 
-  // Advance past celebration timer
-  for (let i = 0; i < 210; i++) {
+  // Advance past celebration timer -> enters instant goal_replay
+  for (let i = 0; i < 130; i++) {
+    stepSimulation(state, {}, 1 / 60);
+  }
+  assert.equal(state.phase, 'goal_replay');
+
+  // Advance past goal replay -> golden goal ends match
+  for (let i = 0; i < 290; i++) {
     stepSimulation(state, {}, 1 / 60);
   }
   assert.equal(state.phase, 'ended');
   assert.equal(state.winner, 'orange');
 
-  resetKickoff(state);
+  // Skipping replay resets straight to kickoff in regular time
+  state.isOvertime = false;
+  state.phase = 'goal_replay';
+  skipGoalReplay(state);
   assert.equal(state.phase, 'countdown');
 });
 

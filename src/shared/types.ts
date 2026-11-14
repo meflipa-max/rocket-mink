@@ -104,6 +104,7 @@ export type MatchPhase =
   | 'countdown'
   | 'active'
   | 'goal_scored'
+  | 'goal_replay'
   | 'ended';
 
 export interface GameStateSnapshot {

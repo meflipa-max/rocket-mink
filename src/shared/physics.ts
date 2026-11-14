@@ -11,6 +11,7 @@ import {
   getKickoffSpawn,
   resolveArenaSphere,
 } from './arena';
+import { GOAL_CELEBRATION_DURATION, GOAL_REPLAY_DURATION } from './replay';
 import {
   addV3,
   clamp,
@@ -228,10 +229,20 @@ export function stepSimulation(
     return events;
   }
 
-  // Goal scored celebration phase (physics still continues in slow-ish explosion!)
+  // Goal scored celebration phase (physics still continues during explosion blast!)
   if (state.phase === 'goal_scored') {
     state.phaseTimer -= stepDt;
     stepCarsOnly(state, inputs, stepDt, events);
+    if (authoritative && state.phaseTimer <= 0) {
+      state.phase = 'goal_replay';
+      state.phaseTimer = GOAL_REPLAY_DURATION;
+    }
+    return events;
+  }
+
+  // Instant Goal Replay playback phase (synchronized via phaseTimer, followed by kickoff or ended)
+  if (state.phase === 'goal_replay') {
+    state.phaseTimer -= stepDt;
     if (authoritative && state.phaseTimer <= 0) {
       if (state.isOvertime) {
         state.phase = 'ended';
@@ -330,7 +341,7 @@ export function stepSimulation(
       state.lastGoalScorer = scorer ? scorer.name : scoringTeam === 'blue' ? 'Squadra Blu' : 'Squadra Arancione';
       state.lastGoalSpeedKph = speedKph;
       state.phase = 'goal_scored';
-      state.phaseTimer = 3.2;
+      state.phaseTimer = GOAL_CELEBRATION_DURATION;
 
       // Rocket League Goal Explosion shockwave pushes all cars radially away from goal!
       const goalCenter = v3(
@@ -984,4 +995,18 @@ export function computeBotInput(car: CarState, state: GameStateSnapshot): Player
     yaw: steer,
     roll,
   };
+}
+
+/** Skips an active goal celebration/replay straight to kickoff or match end. */
+export function skipGoalReplay(state: GameStateSnapshot): SimulationEvent[] {
+  const events: SimulationEvent[] = [];
+  if (state.phase !== 'goal_scored' && state.phase !== 'goal_replay') return events;
+  if (state.isOvertime) {
+    state.phase = 'ended';
+    state.winner = state.scoreBlue > state.scoreOrange ? 'blue' : 'orange';
+    events.push({ type: 'match_ended', winner: state.winner });
+  } else {
+    resetKickoff(state);
+  }
+  return events;
 }

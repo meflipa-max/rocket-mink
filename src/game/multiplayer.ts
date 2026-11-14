@@ -18,7 +18,7 @@ import {
   DEFAULT_CUSTOMIZATION_BLUE,
   DEFAULT_CUSTOMIZATION_ORANGE,
 } from '../shared/types';
-import type { PlayerSeed } from '../shared/physics';
+import { skipGoalReplay, type PlayerSeed } from '../shared/physics';
 import {
   canAcceptRoomRequest,
   findStalePlayerIds,
@@ -777,6 +777,19 @@ export class MultiplayerClient {
     if (event === 'room:arena' && id === this.id) room.arenaId = data?.arenaId;
     if ((event === 'match:start' || event === 'match:rematch') && id === this.id) {
       this.startMatch();
+      return;
+    }
+    if (event === 'replay:skip' && id === this.id && this.simulation) {
+      const events = skipGoalReplay(this.simulation.state);
+      if (events.length) this.broadcast('game:events', events);
+      this.fire('game:state', structuredClone(this.simulation.state));
+      const wire = packCompactSnapshot(this.simulation.state, ++this.stateSeq);
+      const serialized = JSON.stringify({ event: 'game:state:c', payload: wire });
+      for (const peer of this.peers.values()) {
+        const ch = peer.stateChannel?.readyState === 'open' ? peer.stateChannel : peer.channel;
+        if (ch?.readyState === 'open') ch.send(serialized);
+      }
+      if (this.relayPeers.size > 0) this.sendRoomRelay('game:state:c', wire);
       return;
     }
     if (event === 'chat:send') {

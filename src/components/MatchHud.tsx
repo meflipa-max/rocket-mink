@@ -1,5 +1,6 @@
-import { Volume2, VolumeX, Pause } from 'lucide-react';
+import { Volume2, VolumeX, Pause, SkipForward } from 'lucide-react';
 import type { GoalMarkerProjection, HudTelemetry, NameplateProjection } from '../game/renderer';
+import { GOAL_REPLAY_DURATION } from '../shared/replay';
 import type { CarState, GameEventNotification, QuickChatEvent, Team } from '../shared/types';
 
 interface MatchHudProps {
@@ -14,10 +15,12 @@ interface MatchHudProps {
   roomCode: string | null;
   chatMessages: QuickChatEvent[];
   notifications: GameEventNotification[];
+  canSkipReplay: boolean;
   onToggleMute: () => void;
   onTogglePause: () => void;
   onToggleBallCam: () => void;
   onQuickChat: (slot: number) => void;
+  onSkipReplay: () => void;
 }
 
 export const QUICK_CHAT_OPTIONS = [
@@ -47,11 +50,17 @@ export function MatchHud({
   roomCode,
   chatMessages,
   notifications,
+  canSkipReplay,
   onToggleMute,
   onTogglePause,
   onToggleBallCam,
   onQuickChat,
+  onSkipReplay,
 }: MatchHudProps) {
+  const isReplay = hud.phase === 'goal_replay';
+  const replayProgress = isReplay
+    ? Math.max(0, Math.min(1, 1 - hud.phaseTimer / GOAL_REPLAY_DURATION))
+    : 0;
   const targetTeam: Team = localTeam === 'blue' ? 'orange' : 'blue';
   const targetMarker = goalMarkers.find((g) => g.team === targetTeam);
   const boostRatio = Math.max(0, Math.min(1, hud.boost / 100));
@@ -66,6 +75,56 @@ export function MatchHud({
 
   return (
     <div className="fixed inset-0 z-10 pointer-events-none select-none">
+      {/* Broadcast Cinema Bars & Replay Badge */}
+      {isReplay && (
+        <>
+          <div className="fixed inset-x-0 top-0 h-7 bg-black/80 border-b border-white/10" />
+          <div className="fixed inset-x-0 bottom-0 h-7 bg-black/80 border-t border-white/10" />
+          <div
+            data-testid="goal-replay-banner"
+            className="fixed top-10 left-5 flex flex-col gap-1.5 bg-[#0b101c]/92 border border-white/15 rounded-xl px-4 py-2.5 shadow-2xl"
+          >
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse" />
+              <span className="font-display font-extrabold text-sm tracking-widest text-white">
+                REPLAY GOL
+              </span>
+              <span
+                className={`ml-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                  hud.lastGoalTeam === 'blue' ? 'bg-blue-600 text-white' : 'bg-orange-600 text-white'
+                }`}
+              >
+                {hud.lastGoalTeam === 'blue' ? 'BLU' : 'ARANCIONE'}
+              </span>
+            </div>
+            <div className="text-xs text-slate-200 font-semibold">
+              {hud.lastGoalScorer || 'Squadra'} ·{' '}
+              <span className="font-mono-nums text-amber-300">{hud.lastGoalSpeedKph} km/h</span>
+            </div>
+            <div className="w-48 h-1 rounded-full bg-white/15 overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-sky-400 to-orange-400 transition-[width] duration-75"
+                style={{ width: `${Math.round(replayProgress * 100)}%` }}
+              />
+            </div>
+          </div>
+
+          {canSkipReplay && (
+            <button
+              type="button"
+              tabIndex={-1}
+              onClick={(e) => {
+                e.currentTarget.blur();
+                onSkipReplay();
+              }}
+              className="fixed bottom-11 right-5 pointer-events-auto flex items-center gap-2 px-4 py-2 rounded-lg bg-[#0b101c]/92 hover:bg-[#1e293b] border border-white/20 text-xs font-bold text-white shadow-xl cursor-pointer"
+            >
+              <SkipForward className="w-4 h-4 text-sky-400" />
+              Salta Replay [Spazio]
+            </button>
+          )}
+        </>
+      )}
       {/* Projected 3D Goal Labels ("SEGNA QUI" vs "TUA PORTA") */}
       {goalMarkers.map((g) => {
         if (!g.visible) return null;
@@ -114,7 +173,7 @@ export function MatchHud({
       )}
 
       {/* Top-Center Scoreboard */}
-      <div className="fixed top-4 left-1/2 -translate-x-1/2 flex flex-col items-center">
+      <div className={`fixed left-1/2 -translate-x-1/2 flex flex-col items-center transition-all ${isReplay ? 'top-9' : 'top-4'}`}>
         <div className="flex items-stretch rounded-lg overflow-hidden shadow-xl border border-white/15 bg-[#0b101c]/90">
           <div className="flex items-center gap-2.5 px-4 py-1.5 bg-blue-600 text-white">
             <span className="text-[11px] font-bold tracking-wider uppercase opacity-90">
@@ -190,7 +249,7 @@ export function MatchHud({
       </div>
 
       {/* Top-Right Compact Utility Buttons */}
-      <div className="fixed top-4 right-4 flex items-center gap-2 pointer-events-auto">
+      <div className={`fixed right-4 flex items-center gap-2 pointer-events-auto ${isReplay ? 'top-9' : 'top-4'}`}>
         <button
           type="button"
           tabIndex={-1}
@@ -219,6 +278,7 @@ export function MatchHud({
       </div>
 
       {/* Top-Left Live Feed & Quick Chat */}
+      {!isReplay && (
       <div className="fixed top-4 left-4 flex flex-col gap-1.5 max-w-xs">
         {notifications.map((n) => (
           <div
@@ -252,6 +312,7 @@ export function MatchHud({
           </div>
         ))}
       </div>
+      )}
 
       {/* Center Kickoff Countdown or Goal Celebration Banner */}
       {countdownDigit !== null && (
@@ -281,6 +342,7 @@ export function MatchHud({
       )}
 
       {/* Bottom-Left Wall Drive Indicator + Ball Cam Indicator + Quick Chat Bar */}
+      {!isReplay && (
       <div className="fixed bottom-5 left-5 flex flex-col gap-2 pointer-events-auto">
         {hud.onWall && (
           <div
@@ -324,8 +386,10 @@ export function MatchHud({
           ))}
         </div>
       </div>
+      )}
 
       {/* Bottom-Right Iconic Rocket League Boost Gauge */}
+      {!isReplay && (
       <div className="fixed bottom-5 right-5 flex flex-col items-center">
         <div className="relative w-32 h-32 flex items-center justify-center">
           <svg
@@ -379,6 +443,7 @@ export function MatchHud({
           </div>
         )}
       </div>
+      )}
 
       {/* Tab Scoreboard Overlay */}
       {showScoreboard && (
