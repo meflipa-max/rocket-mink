@@ -133,7 +133,7 @@ export class GameViewportController {
       this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 2),
     );
     this.renderer.shadowMap.enabled = !this.isSoftwareGl;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
 
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
@@ -316,8 +316,11 @@ export class GameViewportController {
       return;
     }
 
-    // Check if cars roster changed
-    if (this.activeState.cars.length !== snapshot.cars.length) {
+    // Check if cars roster changed (count or player IDs, e.g. hot-join replacing a bot)
+    const rosterChanged =
+      this.activeState.cars.length !== snapshot.cars.length ||
+      this.activeState.cars.some((car, idx) => car.id !== snapshot.cars[idx]?.id);
+    if (rosterChanged) {
       this.activeState = structuredClone(snapshot);
       this.syncCarRigsFromState(this.activeState);
     } else {

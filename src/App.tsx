@@ -25,6 +25,7 @@ import type {
   Team,
 } from './shared/types';
 import { DEFAULT_CUSTOMIZATION_BLUE, DEFAULT_CUSTOMIZATION_ORANGE } from './shared/types';
+import { normalizeRoomCodeInput } from './shared/roomHelpers';
 
 type AppScreenState = 'title' | 'playing' | 'paused' | 'gameover';
 
@@ -63,13 +64,24 @@ function loadStoredName(): string {
   }
 }
 
+function getInitialInviteCode(): string {
+  try {
+    return normalizeRoomCodeInput(new URLSearchParams(window.location.search).get('room') || '');
+  } catch {
+    return '';
+  }
+}
+
 export default function App() {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const controllerRef = useRef<GameViewportController | null>(null);
   const socketRef = useRef<MultiplayerClient | null>(null);
+  const [initialInviteCode] = useState<string>(getInitialInviteCode);
 
   const [screenState, setScreenState] = useState<AppScreenState>('title');
-  const [subModal, setSubModal] = useState<'none' | 'multiplayer' | 'garage'>('none');
+  const [subModal, setSubModal] = useState<'none' | 'multiplayer' | 'garage'>(() =>
+    getInitialInviteCode() ? 'multiplayer' : 'none',
+  );
 
   const [playerName, setPlayerName] = useState<string>(loadStoredName);
   const [customization, setCustomization] = useState<CarCustomization>(loadStoredCustomization);
@@ -82,6 +94,7 @@ export default function App() {
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [currentRoom, setCurrentRoom] = useState<RoomDetail | null>(null);
   const [roomError, setRoomError] = useState<string | null>(null);
+  const [joiningCode, setJoiningCode] = useState<string | null>(() => getInitialInviteCode() || null);
   const [isMultiplayerMatch, setIsMultiplayerMatch] = useState(false);
 
   // Live HUD state
@@ -282,6 +295,7 @@ export default function App() {
     let sock: MultiplayerClient | null = null;
     if (!import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY) {
       setServerStatus('static_only');
+      setJoiningCode(null);
       return;
     }
     try {
@@ -295,9 +309,11 @@ export default function App() {
 
         if (!autoJoinedInvite) {
           autoJoinedInvite = true;
-          const inviteCode = new URLSearchParams(window.location.search).get('room')?.trim().toUpperCase();
+          const inviteCode = getInitialInviteCode();
           if (inviteCode) {
             setSubModal('multiplayer');
+            setRoomError(null);
+            setJoiningCode(inviteCode);
             sock?.emit('room:join', {
               code: inviteCode,
               playerName: localConfigRef.current.name,
@@ -311,6 +327,7 @@ export default function App() {
         setServerStatus('connecting');
         setSocketId('');
         setCurrentRoom(null);
+        setJoiningCode(null);
         setRooms([]);
         if (isMultiplayerRef.current) {
           setIsMultiplayerMatch(false);
@@ -320,7 +337,10 @@ export default function App() {
           setSubModal('multiplayer');
         }
       });
-      sock.on('connect_error', () => setServerStatus('static_only'));
+      sock.on('connect_error', () => {
+        setServerStatus('static_only');
+        setJoiningCode(null);
+      });
 
       sock.on('rooms:update', (list: RoomSummary[]) => {
         setRooms(list);
@@ -328,6 +348,7 @@ export default function App() {
 
       sock.on('room:joined', (detail: RoomDetail) => {
         setRoomError(null);
+        setJoiningCode(null);
         setCurrentRoom(detail);
       });
 
@@ -336,11 +357,13 @@ export default function App() {
       });
 
       sock.on('room:error', (msg: string) => {
+        setJoiningCode(null);
         setRoomError(msg);
       });
 
       sock.on('match:started', (snapshot: GameStateSnapshot) => {
         const myId = sock?.id || 'local-player';
+        setJoiningCode(null);
         setIsMultiplayerMatch(true);
         setLocalPlayerId(myId);
         setCarsSnapshot(snapshot.cars);
@@ -509,8 +532,13 @@ export default function App() {
           currentRoom={currentRoom}
           localSocketId={socketId}
           errorMsg={roomError}
+          joiningCode={joiningCode}
+          initialJoinCode={initialInviteCode}
+          serverStatus={serverStatus}
           serverOffline={serverStatus === 'static_only'}
           onCreateRoom={({ roomName, mode, arenaId, fillBots }) => {
+            setRoomError(null);
+            setJoiningCode(null);
             socketRef.current?.emit('room:create', {
               playerName,
               roomName,
@@ -521,8 +549,19 @@ export default function App() {
             });
           }}
           onJoinRoom={(code) => {
-            socketRef.current?.emit('room:join', {
-              code,
+            const normalized = normalizeRoomCodeInput(code);
+            if (!normalized) {
+              setRoomError('Inserisci un codice stanza valido.');
+              return;
+            }
+            if (!socketRef.current || serverStatus === 'static_only') {
+              setRoomError('Server multiplayer non collegato su questo host.');
+              return;
+            }
+            setRoomError(null);
+            setJoiningCode(normalized);
+            socketRef.current.emit('room:join', {
+              code: normalized,
               playerName,
               customization,
             });
@@ -533,9 +572,19 @@ export default function App() {
           onLeaveRoom={() => {
             socketRef.current?.emit('room:leave');
             setCurrentRoom(null);
+            setJoiningCode(null);
           }}
           onRefreshRooms={() => socketRef.current?.emit('rooms:list')}
-          onClose={() => setSubModal('none')}
+          onClose={() => {
+            setJoiningCode(null);
+            setRoomError(null);
+            if (window.location.search.includes('room=')) {
+              const url = new URL(window.location.href);
+              url.searchParams.delete('room');
+              window.history.replaceState({}, '', url.pathname + url.search);
+            }
+            setSubModal('none');
+          }}
         />
       )}
 
