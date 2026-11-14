@@ -9,7 +9,9 @@ import {
   resolveArenaSphere,
 } from './arena';
 import {
+  MAX_CAR_SPEED,
   NEUTRAL_INPUT,
+  SUPERSONIC_THRESHOLD,
   createMatchState,
   resetKickoff,
   stepSimulation,
@@ -46,7 +48,8 @@ test('car accelerates, consumes boost, and reaches supersonic speed', () => {
   }
 
   const speed = Math.hypot(state.cars[0].vel.x, state.cars[0].vel.z);
-  assert.ok(speed > 34.5, `Expected supersonic speed > 34.5, got ${speed}`);
+  assert.ok(MAX_CAR_SPEED < 25, 'Normal car speed should stay controlled');
+  assert.ok(speed > SUPERSONIC_THRESHOLD, `Expected supersonic speed > ${SUPERSONIC_THRESHOLD}, got ${speed}`);
   assert.equal(state.cars[0].supersonic, true);
   assert.ok(state.cars[0].boost < 100, 'Boost should be consumed');
 });

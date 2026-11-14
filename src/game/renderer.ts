@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { ARENA_HALF_X, ARENA_HALF_Z, ARENA_HEIGHT } from '../shared/arena';
+import { ARENA_HALF_X, ARENA_HALF_Z, ARENA_HEIGHT, GOAL_HEIGHT } from '../shared/arena';
 import { clamp, lerp } from '../shared/math3d';
 import { NEUTRAL_INPUT, stepSimulation, type SimulationEvent } from '../shared/physics';
 import type {
@@ -9,6 +9,7 @@ import type {
   CarState,
   GameStateSnapshot,
   PlayerInput,
+  Team,
 } from '../shared/types';
 import { DEFAULT_CUSTOMIZATION_BLUE, DEFAULT_CUSTOMIZATION_ORANGE } from '../shared/types';
 import { buildCarVisualRig, type CarVisualRig } from './carMesh';
@@ -42,6 +43,15 @@ export interface NameplateProjection {
   x: number;
   y: number;
   visible: boolean;
+}
+
+export interface GoalMarkerProjection {
+  team: Team;
+  x: number;
+  y: number;
+  inFront: boolean;
+  visible: boolean;
+  side: 'left' | 'right' | 'center';
 }
 
 // Pre-allocated math helpers (Zero GC inside render loop)
@@ -111,6 +121,7 @@ export class GameViewportController {
   public onSendInput?: (input: PlayerInput) => void;
   public onBallCamChange?: (enabled: boolean) => void;
   public onNameplates?: (plates: NameplateProjection[]) => void;
+  public onGoalMarkers?: (markers: GoalMarkerProjection[]) => void;
   public onPauseToggle?: () => void;
   public onQuickChatKey?: (slot: number) => void;
 
@@ -577,13 +588,13 @@ export class GameViewportController {
 
     if (this.mode === 'title') {
       // Live world stadium orbital flyover
-      const angle = this.elapsed * 0.16;
+      const angle = this.elapsed * 0.14;
       this.camera.position.set(
-        Math.cos(angle) * 44,
-        15 + Math.sin(this.elapsed * 0.4) * 2.5,
-        Math.sin(angle) * 52,
+        Math.cos(angle) * 62,
+        21 + Math.sin(this.elapsed * 0.4) * 3.0,
+        Math.sin(angle) * 74,
       );
-      this.camera.lookAt(0, 2.2, 0);
+      this.camera.lookAt(0, 3.0, 0);
       this.camera.fov = 68;
       this.camera.updateProjectionMatrix();
 
@@ -747,6 +758,31 @@ export class GameViewportController {
     }
 
     this.onNameplates?.(plates);
+
+    // Project Blue (-Z) and Orange (+Z) goal markers so players always know which goal to attack/defend
+    const goalMarkers: GoalMarkerProjection[] = [];
+    for (const [team, gz] of [
+      ['blue', -ARENA_HALF_Z],
+      ['orange', ARENA_HALF_Z],
+    ] as const) {
+      _proj.set(0, GOAL_HEIGHT + 5.8, gz);
+      _v2.copy(_proj).sub(this.camera.position);
+      this.camera.getWorldDirection(_v3);
+      const inFront = _v2.dot(_v3) > 0;
+      _proj.project(this.camera);
+      const sx = (_proj.x * 0.5 + 0.5) * w;
+      const sy = (-_proj.y * 0.5 + 0.5) * h;
+      const visible =
+        inFront &&
+        _proj.z >= -1 &&
+        _proj.z <= 1 &&
+        Math.abs(_proj.x) <= 0.96 &&
+        Math.abs(_proj.y) <= 0.92;
+      const relX = inFront ? _proj.x : -_proj.x;
+      const side = relX < -0.15 ? 'left' : relX > 0.15 ? 'right' : 'center';
+      goalMarkers.push({ team, x: sx, y: sy, inFront, visible, side });
+    }
+    this.onGoalMarkers?.(goalMarkers);
 
     // Camera Follow Rig (Ball Cam or Car Cam)
     if (localCar) {

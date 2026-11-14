@@ -7,6 +7,7 @@ import { MultiplayerLobby } from './components/MultiplayerLobby';
 import { TitleScreen } from './components/TitleScreen';
 import {
   GameViewportController,
+  type GoalMarkerProjection,
   type HudTelemetry,
   type NameplateProjection,
 } from './game/renderer';
@@ -100,6 +101,7 @@ export default function App() {
   // Live HUD state
   const [hud, setHud] = useState<HudTelemetry>(INITIAL_HUD);
   const [nameplates, setNameplates] = useState<NameplateProjection[]>([]);
+  const [goalMarkers, setGoalMarkers] = useState<GoalMarkerProjection[]>([]);
   const [carsSnapshot, setCarsSnapshot] = useState<CarState[]>([]);
   const [localPlayerId, setLocalPlayerId] = useState<string>('local-player');
   const [showScoreboard, setShowScoreboard] = useState(false);
@@ -248,6 +250,7 @@ export default function App() {
       }
     };
     ctrl.onNameplates = (plates) => setNameplates(plates);
+    ctrl.onGoalMarkers = (markers) => setGoalMarkers(markers);
     ctrl.onEvents = handleEvents;
     ctrl.onSendInput = (input) => {
       socketRef.current?.emit('player:input', input);
@@ -593,8 +596,10 @@ export default function App() {
         <MatchHud
           hud={hud}
           nameplates={nameplates}
+          goalMarkers={goalMarkers}
           cars={carsSnapshot}
           localPlayerId={localPlayerId}
+          localTeam={carsSnapshot.find((c) => c.id === localPlayerId)?.team || 'blue'}
           showScoreboard={showScoreboard}
           muted={muted}
           roomCode={currentRoom?.code ?? null}

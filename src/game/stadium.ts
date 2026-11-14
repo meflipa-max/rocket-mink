@@ -53,30 +53,32 @@ function createPitchTexture(arenaId: ArenaId): THREE.CanvasTexture {
     ctx.fillRect((i * 197) % 1024, (i * 313) % 1024, 3, 2);
   }
 
-  // Team-tinted half zones
+  // Team-tinted half zones (clear visual distinction between Blue & Orange sides)
   const blueGrad = ctx.createLinearGradient(0, 0, 0, 512);
-  blueGrad.addColorStop(0, 'rgba(37, 99, 235, 0.24)');
+  blueGrad.addColorStop(0, 'rgba(37, 99, 235, 0.42)');
+  blueGrad.addColorStop(0.45, 'rgba(37, 99, 235, 0.14)');
   blueGrad.addColorStop(1, 'rgba(37, 99, 235, 0)');
   ctx.fillStyle = blueGrad;
   ctx.fillRect(0, 0, 1024, 512);
 
   const orangeGrad = ctx.createLinearGradient(0, 512, 0, 1024);
   orangeGrad.addColorStop(0, 'rgba(234, 88, 12, 0)');
-  orangeGrad.addColorStop(1, 'rgba(234, 88, 12, 0.24)');
+  orangeGrad.addColorStop(0.55, 'rgba(234, 88, 12, 0.14)');
+  orangeGrad.addColorStop(1, 'rgba(234, 88, 12, 0.42)');
   ctx.fillStyle = orangeGrad;
   ctx.fillRect(0, 512, 1024, 512);
 
   // Crisp field lines
-  ctx.strokeStyle = isNeo ? 'rgba(186, 230, 253, 0.72)' : 'rgba(255, 255, 255, 0.78)';
+  ctx.strokeStyle = isNeo ? 'rgba(186, 230, 253, 0.72)' : 'rgba(255, 255, 255, 0.8)';
   ctx.lineWidth = 7;
 
   // Outer pitch touchlines
-  ctx.strokeRect(32, 32, 960, 960);
+  ctx.strokeRect(28, 28, 968, 968);
 
   // Midfield line & center circle
   ctx.beginPath();
-  ctx.moveTo(32, 512);
-  ctx.lineTo(992, 512);
+  ctx.moveTo(28, 512);
+  ctx.lineTo(996, 512);
   ctx.stroke();
 
   ctx.beginPath();
@@ -84,7 +86,7 @@ function createPitchTexture(arenaId: ArenaId): THREE.CanvasTexture {
   ctx.stroke();
 
   // Inner midfield hexagon emblem
-  ctx.strokeStyle = isNeo ? 'rgba(56, 189, 248, 0.6)' : 'rgba(255,255,255,0.4)';
+  ctx.strokeStyle = isNeo ? 'rgba(56, 189, 248, 0.6)' : 'rgba(255,255,255,0.45)';
   ctx.lineWidth = 4;
   ctx.beginPath();
   for (let i = 0; i < 6; i++) {
@@ -97,11 +99,29 @@ function createPitchTexture(arenaId: ArenaId): THREE.CanvasTexture {
   ctx.closePath();
   ctx.stroke();
 
-  // Penalty boxes
-  ctx.strokeStyle = isNeo ? 'rgba(186, 230, 253, 0.65)' : 'rgba(255, 255, 255, 0.72)';
-  ctx.lineWidth = 6;
-  ctx.strokeRect(272, 32, 480, 155);
-  ctx.strokeRect(272, 837, 480, 155);
+  // Team-colored Penalty boxes & painted goal creases
+  ctx.fillStyle = 'rgba(59, 130, 246, 0.25)';
+  ctx.fillRect(282, 28, 460, 148);
+  ctx.strokeStyle = '#60a5fa';
+  ctx.lineWidth = 7;
+  ctx.strokeRect(282, 28, 460, 148);
+
+  ctx.fillStyle = 'rgba(249, 115, 22, 0.25)';
+  ctx.fillRect(282, 848, 460, 148);
+  ctx.strokeStyle = '#fb923c';
+  ctx.lineWidth = 7;
+  ctx.strokeRect(282, 848, 460, 148);
+
+  // Subtle turf emblems identifying each half
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '800 44px sans-serif';
+  ctx.fillStyle = 'rgba(147, 197, 253, 0.35)';
+  ctx.fillText('BLU', 512, 102);
+  ctx.fillStyle = 'rgba(253, 186, 116, 0.35)';
+  ctx.fillText('ARANCIONE', 512, 922);
+  ctx.restore();
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -245,27 +265,27 @@ export function buildStadium(
   group.add(hemiLight);
 
   const keyLight = new THREE.DirectionalLight(0xfff1d6, 1.85);
-  keyLight.position.set(36, 58, 28);
+  keyLight.position.set(48, 76, 38);
   keyLight.castShadow = !isSoftwareGl;
   if (!isSoftwareGl) {
     keyLight.shadow.mapSize.set(1024, 1024);
-    keyLight.shadow.camera.left = -62;
-    keyLight.shadow.camera.right = 62;
-    keyLight.shadow.camera.top = 62;
-    keyLight.shadow.camera.bottom = -62;
+    keyLight.shadow.camera.left = -98;
+    keyLight.shadow.camera.right = 98;
+    keyLight.shadow.camera.top = 98;
+    keyLight.shadow.camera.bottom = -98;
     keyLight.shadow.camera.near = 10;
-    keyLight.shadow.camera.far = 150;
+    keyLight.shadow.camera.far = 220;
     keyLight.shadow.bias = -0.0005;
     keyLight.shadow.normalBias = 0.02;
   }
   group.add(keyLight);
 
   const rimLight = new THREE.DirectionalLight(0x38bdf8, 0.65);
-  rimLight.position.set(-40, 32, -55);
+  rimLight.position.set(-55, 42, -75);
   group.add(rimLight);
 
   // Extended surrounding stadium apron (never floating in a void!)
-  const apronGeo = new THREE.PlaneGeometry(420, 420);
+  const apronGeo = new THREE.PlaneGeometry(580, 580);
   apronGeo.rotateX(-Math.PI / 2);
   const apronMat = new THREE.MeshStandardMaterial({
     color: 0x0b1220,
@@ -377,14 +397,42 @@ export function buildStadium(
   addWallSegment(gx, hz, hx - c, hz, ARENA_HEIGHT, 0, 0xf97316);
   addWallSegment(-gx, hz, gx, hz, ARENA_HEIGHT - GOAL_HEIGHT, GOAL_HEIGHT, 0xf97316);
 
-  // Build Recessed 3D Goals (Blue at -Z, Orange at +Z)
-  const buildGoal = (zDir: -1 | 1, colorHex: number) => {
+  const createGoalSignTexture = (title: string, bgHex: string, borderHex: string) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = bgHex;
+    ctx.fillRect(0, 0, 512, 128);
+    ctx.strokeStyle = borderHex;
+    ctx.lineWidth = 10;
+    ctx.strokeRect(6, 6, 500, 116);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '800 48px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(title, 256, 66);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  };
+
+  // Build Recessed 3D Goals (Blue at -Z, Orange at +Z) with distinct team frames, beacons & overhead signs
+  const buildGoal = (
+    zDir: -1 | 1,
+    colorHex: number,
+    signTitle: string,
+    signBgHex: string,
+    signBorderHex: string,
+  ) => {
     const zLine = zDir * ARENA_HALF_Z;
     const zBack = zDir * (ARENA_HALF_Z + GOAL_DEPTH);
     const frameMat = new THREE.MeshStandardMaterial({
-      color: 0xe2e8f0,
-      metalness: 0.85,
-      roughness: 0.22,
+      color: colorHex,
+      emissive: colorHex,
+      emissiveIntensity: 0.35,
+      metalness: 0.65,
+      roughness: 0.25,
     });
     const glowMat = new THREE.MeshBasicMaterial({
       color: colorHex,
@@ -393,37 +441,63 @@ export function buildStadium(
       map: wallTex,
       color: colorHex,
       transparent: true,
-      opacity: 0.42,
+      opacity: 0.56,
       side: THREE.DoubleSide,
       depthWrite: false,
     });
     disposables.push(frameMat, glowMat, netMat);
 
-    // Goal posts & crossbar
-    const postGeo = new THREE.CylinderGeometry(0.28, 0.28, GOAL_HEIGHT, 12);
+    // Team-colored Goal posts & crossbar
+    const postGeo = new THREE.CylinderGeometry(0.36, 0.36, GOAL_HEIGHT, 12);
     for (const px of [-GOAL_HALF_X, GOAL_HALF_X]) {
       const post = new THREE.Mesh(postGeo, frameMat);
       post.position.set(px, GOAL_HEIGHT / 2, zLine);
       group.add(post);
     }
-    const barGeo = new THREE.CylinderGeometry(0.28, 0.28, GOAL_HALF_X * 2 + 0.56, 12);
+    const barGeo = new THREE.CylinderGeometry(0.36, 0.36, GOAL_HALF_X * 2 + 0.72, 12);
     barGeo.rotateZ(Math.PI / 2);
     const crossbar = new THREE.Mesh(barGeo, frameMat);
     crossbar.position.set(0, GOAL_HEIGHT, zLine);
     group.add(crossbar);
 
-    // Neon goal-line strip
-    const lineGeo = new THREE.BoxGeometry(GOAL_HALF_X * 2, 0.08, 0.25);
+    // Tall glowing flank beacon pillars outside the posts (visible from anywhere on pitch)
+    const beaconGeo = new THREE.BoxGeometry(0.9, GOAL_HEIGHT * 1.85, 0.9);
+    for (const bx of [-(GOAL_HALF_X + 1.4), GOAL_HALF_X + 1.4]) {
+      const beacon = new THREE.Mesh(beaconGeo, glowMat);
+      beacon.position.set(bx, (GOAL_HEIGHT * 1.85) / 2, zLine - zDir * 0.25);
+      group.add(beacon);
+    }
+
+    // Large 3D Overhead Goal Signboard ("PORTA BLU" / "PORTA ARANCIONE")
+    const signTex = createGoalSignTexture(signTitle, signBgHex, signBorderHex);
+    const signGeo = new THREE.PlaneGeometry(16, 4);
+    const signMat = new THREE.MeshBasicMaterial({
+      map: signTex,
+      side: THREE.DoubleSide,
+    });
+    const signMesh = new THREE.Mesh(signGeo, signMat);
+    signMesh.position.set(0, GOAL_HEIGHT + 3.4, zLine - zDir * 0.3);
+    if (zDir === -1) {
+      signMesh.rotation.y = 0;
+    } else {
+      signMesh.rotation.y = Math.PI;
+    }
+    group.add(signMesh);
+
+    // Bright team-colored goal-line & apron strip
+    const lineGeo = new THREE.BoxGeometry(GOAL_HALF_X * 2, 0.09, 0.5);
     const lineStrip = new THREE.Mesh(lineGeo, glowMat);
-    lineStrip.position.set(0, 0.04, zLine);
+    lineStrip.position.set(0, 0.045, zLine);
     group.add(lineStrip);
 
     // Goal floor, back net, side nets, roof net
     const gFloorGeo = new THREE.PlaneGeometry(GOAL_HALF_X * 2, GOAL_DEPTH);
     gFloorGeo.rotateX(-Math.PI / 2);
     const gFloorMat = new THREE.MeshStandardMaterial({
-      color: 0x0f172a,
-      roughness: 0.7,
+      color: colorHex,
+      emissive: colorHex,
+      emissiveIntensity: 0.14,
+      roughness: 0.75,
     });
     const gFloor = new THREE.Mesh(gFloorGeo, gFloorMat);
     gFloor.position.set(0, 0.02, (zLine + zBack) / 2);
@@ -448,47 +522,60 @@ export function buildStadium(
     gRoof.position.set(0, GOAL_HEIGHT, (zLine + zBack) / 2);
     group.add(gRoof);
 
-    disposables.push(postGeo, barGeo, lineGeo, gFloorGeo, gFloorMat, gBackGeo, gSideGeo, gRoofGeo);
+    disposables.push(
+      postGeo,
+      barGeo,
+      beaconGeo,
+      signTex,
+      signGeo,
+      signMat,
+      lineGeo,
+      gFloorGeo,
+      gFloorMat,
+      gBackGeo,
+      gSideGeo,
+      gRoofGeo,
+    );
   };
 
-  buildGoal(-1, 0x3b82f6); // Blue goal (-Z)
-  buildGoal(1, 0xf97316); // Orange goal (+Z)
+  buildGoal(-1, 0x3b82f6, 'PORTA BLU', '#1e3a8a', '#60a5fa'); // Blue goal (-Z)
+  buildGoal(1, 0xf97316, 'PORTA ARANCIONE', '#7c2d12', '#fb923c'); // Orange goal (+Z)
 
-  // Glowing Midfield Perimeter Arch Ribbing (landmarks visible from any camera angle)
+  // Glowing Midfield Perimeter Arch Ribbing (landmarks outside the wider field)
   const archMat = new THREE.MeshStandardMaterial({
     color: 0x334155,
     metalness: 0.75,
     roughness: 0.3,
   });
-  const archGeo = new THREE.TorusGeometry(48, 0.65, 8, 36, Math.PI);
+  const archGeo = new THREE.TorusGeometry(ARENA_HALF_X + 10, 0.85, 8, 36, Math.PI);
   disposables.push(archMat, archGeo);
-  for (const az of [-34, 0, 34]) {
+  for (const az of [-50, 0, 50]) {
     const arch = new THREE.Mesh(archGeo, archMat);
     arch.position.set(0, 0, az);
     group.add(arch);
   }
 
-  // Tiered Stadium Grandstands (Sides + End-Zones) outside perimeter
-  const standGeo = new THREE.BoxGeometry(8, 10, 92);
-  const endStandGeo = new THREE.BoxGeometry(82, 9, 8);
+  // Tiered Stadium Grandstands (Sides + End-Zones) outside larger perimeter
+  const standGeo = new THREE.BoxGeometry(10, 12, ARENA_HALF_Z * 1.65);
+  const endStandGeo = new THREE.BoxGeometry(ARENA_HALF_X * 1.9, 11, 10);
   const standMat = new THREE.MeshStandardMaterial({
     color: 0x111827,
     roughness: 0.85,
   });
   disposables.push(standGeo, endStandGeo, standMat);
-  for (const sx of [-52, 52]) {
+  for (const sx of [-(ARENA_HALF_X + 14), ARENA_HALF_X + 14]) {
     const stand = new THREE.Mesh(standGeo, standMat);
-    stand.position.set(sx, 5, 0);
+    stand.position.set(sx, 6, 0);
     group.add(stand);
   }
-  for (const sz of [-72, 72]) {
+  for (const sz of [-(ARENA_HALF_Z + 18), ARENA_HALF_Z + 18]) {
     const endStand = new THREE.Mesh(endStandGeo, standMat);
-    endStand.position.set(0, 4.5, sz);
+    endStand.position.set(0, 5.5, sz);
     group.add(endStand);
   }
 
-  // Exterior City Skyline Silhouettes framing the stadium horizon
-  const skylineGeo = new THREE.BoxGeometry(12, 36, 12);
+  // Exterior City Skyline Silhouettes framing the larger stadium horizon
+  const skylineGeo = new THREE.BoxGeometry(14, 42, 14);
   const skylineMat = new THREE.MeshStandardMaterial({
     color: 0x0f172a,
     roughness: 0.7,
@@ -496,26 +583,26 @@ export function buildStadium(
   });
   disposables.push(skylineGeo, skylineMat);
   const skylineCoords: Array<[number, number, number]> = [
-    [-75, 18, -88],
-    [-40, 26, -102],
-    [38, 24, -98],
-    [76, 20, -86],
-    [-78, 22, 86],
-    [-36, 28, 100],
-    [40, 22, 96],
-    [74, 18, 88],
+    [-108, 22, -124],
+    [-55, 32, -138],
+    [52, 28, -134],
+    [110, 24, -120],
+    [-112, 26, 122],
+    [-50, 34, 136],
+    [56, 26, 132],
+    [108, 22, 124],
   ];
   for (const [bx, by, bz] of skylineCoords) {
     const bldg = new THREE.Mesh(skylineGeo, skylineMat);
     bldg.position.set(bx, by, bz);
-    bldg.scale.y = by / 18;
+    bldg.scale.y = by / 21;
     group.add(bldg);
   }
 
   // Instanced Crowd Spectating Dots in Grandstands
-  const crowdGeo = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+  const crowdGeo = new THREE.BoxGeometry(0.75, 0.75, 0.75);
   const crowdMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-  const crowdCount = 260;
+  const crowdCount = 300;
   const crowdInst = new THREE.InstancedMesh(crowdGeo, crowdMat, crowdCount);
   const dummy = new THREE.Object3D();
   const cColor = new THREE.Color();
@@ -523,9 +610,9 @@ export function buildStadium(
     const side = i % 2 === 0 ? -1 : 1;
     const tier = i % 5;
     dummy.position.set(
-      side * (47.8 + tier * 1.1),
-      2.2 + tier * 1.6,
-      ((i * 19) % 86) - 43,
+      side * (ARENA_HALF_X + 9.2 + tier * 1.2),
+      2.6 + tier * 1.8,
+      ((i * 29) % 130) - 65,
     );
     dummy.updateMatrix();
     crowdInst.setMatrixAt(i, dummy.matrix);
@@ -538,25 +625,25 @@ export function buildStadium(
   group.add(crowdInst);
   disposables.push(crowdGeo, crowdMat);
 
-  // 4 Corner Floodlight Towers (tall spawn landmarks)
-  const towerGeo = new THREE.CylinderGeometry(0.8, 1.2, 34, 8);
-  const lampGeo = new THREE.BoxGeometry(5.5, 2.2, 1.2);
+  // 4 Corner Floodlight Towers outside larger stadium corners
+  const towerGeo = new THREE.CylinderGeometry(1.0, 1.4, 42, 8);
+  const lampGeo = new THREE.BoxGeometry(6.5, 2.6, 1.4);
   const lampMat = new THREE.MeshBasicMaterial({ color: 0xfef3c7 });
   disposables.push(towerGeo, lampGeo, lampMat);
 
   const towerPositions: Array<[number, number]> = [
-    [-46, -54],
-    [46, -54],
-    [-46, 54],
-    [46, 54],
+    [-(ARENA_HALF_X + 7), -(ARENA_HALF_Z + 5)],
+    [ARENA_HALF_X + 7, -(ARENA_HALF_Z + 5)],
+    [-(ARENA_HALF_X + 7), ARENA_HALF_Z + 5],
+    [ARENA_HALF_X + 7, ARENA_HALF_Z + 5],
   ];
   for (const [tx, tz] of towerPositions) {
     const tower = new THREE.Mesh(towerGeo, archMat);
-    tower.position.set(tx, 17, tz);
+    tower.position.set(tx, 21, tz);
     group.add(tower);
 
     const lamp = new THREE.Mesh(lampGeo, lampMat);
-    lamp.position.set(tx, 33.5, tz);
+    lamp.position.set(tx, 41.5, tz);
     lamp.lookAt(0, 0, 0);
     group.add(lamp);
   }

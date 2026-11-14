@@ -1,12 +1,14 @@
 import { Volume2, VolumeX, Pause } from 'lucide-react';
-import type { HudTelemetry, NameplateProjection } from '../game/renderer';
-import type { CarState, GameEventNotification, QuickChatEvent } from '../shared/types';
+import type { GoalMarkerProjection, HudTelemetry, NameplateProjection } from '../game/renderer';
+import type { CarState, GameEventNotification, QuickChatEvent, Team } from '../shared/types';
 
 interface MatchHudProps {
   hud: HudTelemetry;
   nameplates: NameplateProjection[];
+  goalMarkers: GoalMarkerProjection[];
   cars: CarState[];
   localPlayerId: string;
+  localTeam: Team;
   showScoreboard: boolean;
   muted: boolean;
   roomCode: string | null;
@@ -36,8 +38,10 @@ function formatClock(sec: number, isOvertime: boolean): string {
 export function MatchHud({
   hud,
   nameplates,
+  goalMarkers,
   cars,
   localPlayerId,
+  localTeam,
   showScoreboard,
   muted,
   roomCode,
@@ -48,6 +52,8 @@ export function MatchHud({
   onToggleBallCam,
   onQuickChat,
 }: MatchHudProps) {
+  const targetTeam: Team = localTeam === 'blue' ? 'orange' : 'blue';
+  const targetMarker = goalMarkers.find((g) => g.team === targetTeam);
   const boostRatio = Math.max(0, Math.min(1, hud.boost / 100));
   const radius = 44;
   const circumference = 2 * Math.PI * radius;
@@ -60,6 +66,33 @@ export function MatchHud({
 
   return (
     <div className="fixed inset-0 z-10 pointer-events-none select-none">
+      {/* Projected 3D Goal Labels ("SEGNA QUI" vs "TUA PORTA") */}
+      {goalMarkers.map((g) => {
+        if (!g.visible) return null;
+        const isTarget = g.team === targetTeam;
+        return (
+          <div
+            key={g.team}
+            className="fixed -translate-x-1/2 -translate-y-full pointer-events-none"
+            style={{ left: `${g.x}px`, top: `${Math.max(92, g.y)}px` }}
+          >
+            <div
+              className={`px-2.5 py-0.5 rounded text-[11px] font-extrabold tracking-wide text-white shadow-lg border whitespace-nowrap hud-text-shadow ${
+                isTarget
+                  ? g.team === 'orange'
+                    ? 'bg-orange-600/90 border-orange-300'
+                    : 'bg-blue-600/90 border-sky-300'
+                  : 'bg-[#0b101c]/80 border-white/25 text-slate-200'
+              }`}
+            >
+              {isTarget
+                ? `SEGNA QUI (${g.team === 'orange' ? 'ARANCIONE' : 'BLU'})`
+                : `TUA PORTA (${g.team === 'blue' ? 'BLU' : 'ARANCIONE'})`}
+            </div>
+          </div>
+        );
+      })}
+
       {/* Projected 3D Car Nameplates */}
       {nameplates.map(
         (p) =>
@@ -124,8 +157,33 @@ export function MatchHud({
           </div>
         </div>
 
+        <div
+          data-testid="team-objective-banner"
+          className="mt-1.5 flex items-center gap-2 px-3 py-0.5 rounded bg-[#0b101c]/88 border border-white/15 text-[11px] font-semibold text-slate-200 shadow"
+        >
+          <span className={localTeam === 'blue' ? 'text-sky-400 font-bold' : 'text-orange-400 font-bold'}>
+            SEI {localTeam === 'blue' ? 'BLU' : 'ARANCIONE'}
+          </span>
+          <span aria-hidden="true" className="text-slate-500">·</span>
+          <span>
+            SEGNA IN PORTA{' '}
+            <strong className={targetTeam === 'orange' ? 'text-orange-400' : 'text-sky-400'}>
+              {targetTeam === 'orange' ? 'ARANCIONE' : 'BLU'}
+            </strong>
+          </span>
+          {targetMarker && !targetMarker.visible && (
+            <span className={targetTeam === 'orange' ? 'text-orange-300 font-bold' : 'text-sky-300 font-bold'}>
+              {targetMarker.side === 'left'
+                ? '←'
+                : targetMarker.side === 'right'
+                  ? '→'
+                  : '↻'}
+            </span>
+          )}
+        </div>
+
         {roomCode && (
-          <div className="mt-1.5 px-2.5 py-0.5 rounded bg-[#0b101c]/85 text-[11px] font-mono-nums text-slate-300 border border-white/10">
+          <div className="mt-1 px-2.5 py-0.5 rounded bg-[#0b101c]/85 text-[11px] font-mono-nums text-slate-300 border border-white/10">
             STANZA: {roomCode}
           </div>
         )}

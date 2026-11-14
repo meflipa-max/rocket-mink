@@ -1,4 +1,5 @@
 import {
+  ARENA_HALF_X,
   ARENA_HALF_Z,
   BALL_RADIUS,
   CAR_HALF_EXTENTS,
@@ -44,9 +45,9 @@ import type {
 import { DEFAULT_CUSTOMIZATION_BLUE, DEFAULT_CUSTOMIZATION_ORANGE } from './types';
 
 export const GRAVITY = -15.2; // Rocket League-style floaty aerial gravity
-export const MAX_CAR_SPEED = 29.0; // Normal max throttle speed (m/s)
-export const SUPERSONIC_THRESHOLD = 34.5; // Supersonic speed threshold (m/s)
-export const MAX_BOOST_SPEED = 40.0; // Max boost speed (m/s)
+export const MAX_CAR_SPEED = 21.0; // Normal max throttle speed (m/s, ~75 km/h)
+export const SUPERSONIC_THRESHOLD = 26.5; // Supersonic speed threshold (m/s, ~95 km/h)
+export const MAX_BOOST_SPEED = 31.0; // Max boost speed (m/s, ~112 km/h)
 export const MATCH_DURATION_SECONDS = 300; // 5:00 standard match
 
 export type SimulationEvent =
@@ -371,8 +372,8 @@ function stepCarsOnly(
       if (car.demolishedTimer <= 0) {
         car.demolishedTimer = 0;
         const side = car.id.charCodeAt(0) % 2 === 0 ? -1 : 1;
-        const z = car.team === 'blue' ? -46 : 46;
-        car.pos = v3(side * 22, CAR_RIDE_HEIGHT, z);
+        const z = car.team === 'blue' ? -(ARENA_HALF_Z - 14) : ARENA_HALF_Z - 14;
+        car.pos = v3(side * (ARENA_HALF_X * 0.52), CAR_RIDE_HEIGHT, z);
         car.vel = v3();
         car.quat = quatFromYaw(car.team === 'blue' ? 0 : Math.PI);
         car.angVel = v3();
@@ -402,8 +403,8 @@ function stepCarsOnly(
     // Boosting (works on ground and in air!)
     const isBoosting = input.boost && car.boost > 0.2;
     if (isBoosting) {
-      car.boost = Math.max(0, car.boost - (state.mode === 'freeplay' ? 12 : 33.3) * dt);
-      const boostAccel = car.onGround ? 36.0 : 30.0;
+      car.boost = Math.max(0, car.boost - (state.mode === 'freeplay' ? 12 : 30.0) * dt);
+      const boostAccel = car.onGround ? 28.0 : 23.0;
       car.vel = addV3(car.vel, scaleV3(forward, boostAccel * dt));
     }
 
@@ -418,7 +419,7 @@ function stepCarsOnly(
       if (Math.abs(throttle) > 0.02) {
         // Braking when moving opposite to throttle is snappier
         const braking = Math.sign(throttle) !== Math.sign(forwardSpeed) && Math.abs(forwardSpeed) > 1.5;
-        const accel = braking ? 58.0 : throttle > 0 ? 34.0 : 25.0;
+        const accel = braking ? 48.0 : throttle > 0 ? 26.0 : 20.0;
         if (Math.abs(forwardSpeed) < MAX_CAR_SPEED || braking || isBoosting) {
           car.vel = addV3(car.vel, scaleV3(forward, throttle * accel * dt));
         }
@@ -503,7 +504,7 @@ function stepCarsOnly(
           // Cancel downward momentum for classic snappy RL flip!
           if (car.vel.y < 0) car.vel.y *= 0.25;
           car.vel.y += 2.6;
-          car.vel = addV3(car.vel, scaleV3(dodgeDir, 15.8));
+          car.vel = addV3(car.vel, scaleV3(dodgeDir, 13.2));
 
           // Flip rotation axis in local car space:
           // Forward flip rotates around local +X; Left flip rotates around local -Z
@@ -782,14 +783,14 @@ function resolveCarCollisions(
       if (a.team !== b.team) {
         const aIntoB = dotV3(a.vel, n);
         const bIntoA = -dotV3(b.vel, n);
-        if (a.supersonic && aIntoB > 26 && aIntoB > bIntoA + 6) {
+        if (a.supersonic && aIntoB > 20 && aIntoB > bIntoA + 5) {
           b.demolishedTimer = 3.0;
           a.demos += 1;
           a.score += 25;
           events.push({ type: 'demo', attackerId: a.id, victimId: b.id, pos: { ...b.pos } });
           continue;
         }
-        if (b.supersonic && bIntoA > 26 && bIntoA > aIntoB + 6) {
+        if (b.supersonic && bIntoA > 20 && bIntoA > aIntoB + 5) {
           a.demolishedTimer = 3.0;
           b.demos += 1;
           b.score += 25;
@@ -835,9 +836,9 @@ export function computeBotInput(car: CarState, state: GameStateSnapshot): Player
     targetPos = subV3(ball.pos, scaleV3(ballToOppGoal, 2.2));
   } else {
     // Rotate back toward own goal post side so bot doesn't own-goal!
-    const sideOffset = car.pos.x >= ball.pos.x ? 9 : -9;
+    const sideOffset = car.pos.x >= ball.pos.x ? 12 : -12;
     targetPos = v3(
-      clamp(ball.pos.x + sideOffset, -30, 30),
+      clamp(ball.pos.x + sideOffset, -(ARENA_HALF_X - 12), ARENA_HALF_X - 12),
       0,
       lerp(ball.pos.z, ownGoalZ, 0.45),
     );
@@ -861,7 +862,7 @@ export function computeBotInput(car: CarState, state: GameStateSnapshot): Player
   const useBoost =
     car.boost > 8 &&
     fwdDot > 0.85 &&
-    ((distToTarget > 14 && car.onGround) || (carBehindBall && distToBall < 18));
+    ((distToTarget > 18 && car.onGround) || (carBehindBall && distToBall < 22));
 
   // Flip into ball when lined up close on ground!
   const shouldFlip =
@@ -870,7 +871,7 @@ export function computeBotInput(car: CarState, state: GameStateSnapshot): Player
     distToBall < 5.8 &&
     ball.pos.y < 3.4 &&
     fwdDot > 0.88 &&
-    lenV3(car.vel) > 12;
+    lenV3(car.vel) > 9;
 
   const shouldFollowUpFlip =
     !car.onGround &&
