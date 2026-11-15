@@ -169,3 +169,29 @@ test('ball continues predicting smoothly past 100ms between relay snapshots whil
   );
 });
 
+test('steady throttle frames sharing last sent seq on relay never double-simulate when host advances inputTime', () => {
+  const host = new HostSimulation('1v1', 'dfh_night', [{ id: 'guest', name: 'Guest', team: 'blue' }]);
+  host.state.phase = 'active';
+  host.state.boostPads = [];
+  let client = structuredClone(host.state);
+  const prediction = new ClientPrediction();
+  const drive = { ...NEUTRAL_INPUT, throttle: 1 };
+
+  // Guest sends seq 1 on frame 0; frames 1..5 are rate-limited on relay so they keep seq 1
+  host.setInput('guest', drive, 0, 1);
+  for (let i = 0; i < 6; i++) {
+    prediction.advance(client, 'guest', drive, DT, true, 1);
+    host.step(DT);
+  }
+  const before = structuredClone(client.cars[0]);
+  const snap = unpackCompactSnapshot(packCompactSnapshot(host.state, 1), host.state);
+  client = prediction.reconcile(client, snap, 'guest');
+  const drift = Math.hypot(
+    client.cars[0].pos.x - before.pos.x,
+    client.cars[0].pos.y - before.pos.y,
+    client.cars[0].pos.z - before.pos.z,
+  );
+  assert.ok(drift < 0.02, `Expected zero double-simulation drift, got ${drift}m`);
+});
+
+

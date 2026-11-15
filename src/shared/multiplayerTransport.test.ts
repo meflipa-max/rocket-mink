@@ -105,3 +105,77 @@ test('disconnected relay cannot create a flood of HTTP fallback requests', () =>
   c.sendRoomRelay('game:state:c', {});
   assert.equal(sends, 1);
 });
+
+test('sendInput returns false when relay rate-limits steady inputs or channel is not joined yet', () => {
+  const c = client();
+  c.usingRelay = true;
+  c.inputSeq = 0;
+  c.supabase = { realtime: { isConnected: () => true } };
+  c.inputLimiter = new (class {
+    calls = 0;
+    accept() { return ++this.calls === 1; }
+  })();
+  // Before inputRelay is joined, sendInput returns false without consuming inputLimiter or advancing seq
+  assert.equal(c.sendInput({ throttle: 1, steer: 0, boost: false, handbrake: false, jump: false, pitch: 0, yaw: 0, roll: 0 }, 0, 1), false);
+  // Once joined, first send succeeds and rate-limited send returns false
+  let sent = 0;
+  c.inputRelays.set('guest', { state: 'joined', send: () => { sent++; return Promise.resolve('ok'); } });
+  assert.equal(c.sendInput({ throttle: 1, steer: 0, boost: false, handbrake: false, jump: false, pitch: 0, yaw: 0, roll: 0 }, 0, 1), true);
+  assert.equal(c.sendInput({ throttle: 1, steer: 0, boost: false, handbrake: false, jump: false, pitch: 0, yaw: 0, roll: 0 }, 0.016, 2), false);
+  assert.equal(sent, 1);
+  assert.equal(c.inputSeq, 1);
+});
+
+test('duplicate WebRTC request/offer re-sends existing SDP without tearing down active ICE negotiation', async () => {
+  const host = client();
+  host.id = 'host';
+  host.connected = true;
+  host.room = { code: 'ABCDEF', maxPlayers: 2, players: [{ id: 'host', isHost: true }] };
+  host.lastPeerSeen = new Map();
+  const hostSignals: any[] = [];
+  host.sendSignal = (kind: string, data: any, to?: string) => hostSignals.push({ kind, data, to });
+  let closed = 0;
+  host.peers.set('guest', {
+    pc: { connectionState: 'connecting', localDescription: { type: 'offer', sdp: 'v=0-offer' }, close: () => { closed++; } },
+  });
+  await host.onSignal({ from: 'guest', to: 'host', kind: 'request', data: { code: 'ABCDEF' } });
+  assert.equal(closed, 0);
+  assert.equal(hostSignals.length, 1);
+  assert.equal(hostSignals[0].kind, 'offer');
+  assert.equal(hostSignals[0].data.sdp, 'v=0-offer');
+
+  const guest = client();
+  guest.id = 'guest';
+  guest.hostId = 'host';
+  guest.pendingJoin = { code: 'ABCDEF' };
+  const guestSignals: any[] = [];
+  guest.sendSignal = (kind: string, data: any, to?: string) => guestSignals.push({ kind, data, to });
+  guest.peers.set('host', {
+    pc: {
+      remoteDescription: { type: 'offer', sdp: 'v=0-offer' },
+      localDescription: { type: 'answer', sdp: 'v=0-answer' },
+      close: () => { closed++; },
+    },
+  });
+  await guest.onSignal({ from: 'host', to: 'guest', kind: 'offer', data: { type: 'offer', sdp: 'v=0-offer' } });
+  assert.equal(closed, 0);
+  assert.equal(guestSignals.length, 1);
+  assert.equal(guestSignals[0].kind, 'answer');
+  assert.equal(guestSignals[0].data.sdp, 'v=0-answer');
+});
+
+test('relay broadcast skips local jump/flip noise while preserving critical events', () => {
+  const c = client();
+  c.id = 'host';
+  c.relayPeers.add('guest');
+  const relayed: any[] = [];
+  c.sendRoomRelay = (event: string, payload: any) => relayed.push({ event, payload });
+  c.broadcast('game:events', [
+    { type: 'jump', carId: 'guest', pos: { x: 0, y: 0, z: 0 } },
+    { type: 'flip', carId: 'guest', pos: { x: 0, y: 0, z: 0 } },
+    { type: 'goal', team: 'blue', scorerName: 'Guest', speedKph: 80, pos: { x: 0, y: 2, z: 75 } },
+  ]);
+  assert.equal(relayed.length, 1);
+  assert.deepEqual(relayed[0].payload.map((e: any) => e.type), ['goal']);
+});
+

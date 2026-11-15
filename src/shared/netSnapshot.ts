@@ -272,6 +272,7 @@ export function reconcilePredictedSnapshot(
 
   // Reconcile ball smoothly
   const ballErr = distVec3(predicted.ball.pos, authoritative.ball.pos);
+  const ballVelErr = distVec3(predicted.ball.vel, authoritative.ball.vel);
   if (ballErr > 4.5) {
     predicted.ball = {
       ...authoritative.ball,
@@ -281,8 +282,9 @@ export function reconcilePredictedSnapshot(
     };
   } else {
     const ballPosBlend = clamp(0.24 + ballErr * 0.08, 0.24, 0.65);
+    const ballVelBlend = ballVelErr > 6 ? 0.72 : 0.35;
     predicted.ball.pos = lerpVec3(predicted.ball.pos, authoritative.ball.pos, ballPosBlend);
-    predicted.ball.vel = lerpVec3(predicted.ball.vel, authoritative.ball.vel, 0.35);
+    predicted.ball.vel = lerpVec3(predicted.ball.vel, authoritative.ball.vel, ballVelBlend);
     predicted.ball.angVel = lerpVec3(predicted.ball.angVel, authoritative.ball.angVel, 0.35);
     predicted.ball.lastTouchTeam = authoritative.ball.lastTouchTeam;
   }

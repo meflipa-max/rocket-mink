@@ -39,9 +39,11 @@ type Peer = {
 };
 
 const ICE_CONFIG: RTCConfiguration = {
+  iceCandidatePoolSize: 4,
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun.cloudflare.com:3478' },
   ],
 };
@@ -62,6 +64,12 @@ export class MultiplayerClient {
         autoRefreshToken: false,
         detectSessionInUrl: false,
         storageKey: 'rocket-mink-auth',
+      },
+      realtime: {
+        heartbeatIntervalMs: 15000,
+        params: {
+          eventsPerSecond: 40,
+        },
       },
     },
   );
@@ -197,9 +205,16 @@ export class MultiplayerClient {
     if (this.relayPeers.size > 0) {
       if (event === 'game:events' && Array.isArray(payload)) {
         const now = performance.now();
-        const sendImpacts = now - this.lastRelayImpactAt >= 300;
-        const relayEvents = payload.filter((item) => sendImpacts || (item.type !== 'ball_hit' && item.type !== 'wall_hit'));
-        if (sendImpacts && relayEvents.length) this.lastRelayImpactAt = now;
+        const sendImpacts = now - this.lastRelayImpactAt >= 400;
+        const relayEvents = payload.filter(
+          (item) =>
+            item.type !== 'jump' &&
+            item.type !== 'flip' &&
+            (sendImpacts || (item.type !== 'ball_hit' && item.type !== 'wall_hit')),
+        );
+        if (sendImpacts && relayEvents.some((item) => item.type === 'ball_hit' || item.type === 'wall_hit')) {
+          this.lastRelayImpactAt = now;
+        }
         if (relayEvents.length) this.sendRoomRelay(event, relayEvents);
       } else {
         this.sendRoomRelay(event, payload);
@@ -207,26 +222,32 @@ export class MultiplayerClient {
     }
   }
 
-  private sendPeer(id: string, event: string, payload?: any, unreliable = false) {
+  private sendPeer(id: string, event: string, payload?: any, unreliable = false): boolean {
     if (this.relayPeers.has(id) || (this.usingRelay && id === this.hostId)) {
       if (event === 'player:input' || event === 'ping' || event === 'pong') {
         const channel = this.inputRelays.get(this.isHost ? id : this.id);
         if (channel?.state === 'joined' && this.supabase.realtime.isConnected()) {
           void channel.send({ type: 'broadcast', event: 'peer', payload: { from: this.id, to: id, event, data: payload } });
+          return true;
         }
-        return;
+        return false;
+      }
+      if (!this.roomChannel || !this.relayReady || this.roomChannel.state !== 'joined' || !this.supabase.realtime.isConnected()) {
+        return false;
       }
       this.sendRoomRelay(event, payload, id);
-      return;
+      return true;
     }
     const peer = this.peers.get(id);
-    if (!peer) return;
+    if (!peer) return false;
     // Never put disposable state/input behind reliable retransmissions.
     const ch = unreliable ? peer.stateChannel : peer.channel;
     if (ch?.readyState === 'open') {
-      if (unreliable && ch.bufferedAmount > 2048) return;
+      if (unreliable && ch.bufferedAmount > 2048) return false;
       ch.send(JSON.stringify({ event, payload }));
+      return true;
     }
+    return false;
   }
 
   private openRoomChannel(code: string, onSubscribed?: () => void) {
@@ -533,6 +554,21 @@ export class MultiplayerClient {
           return;
         }
         this.lastPeerSeen.set(s.from, performance.now());
+        const existingPeer = this.peers.get(s.from);
+        if (
+          existingPeer &&
+          (existingPeer.pc.connectionState === 'new' ||
+            existingPeer.pc.connectionState === 'connecting' ||
+            existingPeer.pc.connectionState === 'connected') &&
+          existingPeer.pc.localDescription
+        ) {
+          this.sendSignal(
+            'offer',
+            { type: existingPeer.pc.localDescription.type, sdp: existingPeer.pc.localDescription.sdp },
+            s.from,
+          );
+          return;
+        }
         const peer = this.newPeer(s.from);
         this.bindChannel(s.from, peer, peer.pc.createDataChannel('game'));
         this.bindStateChannel(
@@ -558,7 +594,18 @@ export class MultiplayerClient {
         }
         return;
       }
-      if (s.kind === 'offer' && this.pendingJoin && !this.hostId && !this.usingRelay) {
+      if (s.kind === 'offer' && this.pendingJoin && !this.usingRelay && (!this.hostId || this.hostId === s.from)) {
+        const existingPeer = this.peers.get(s.from);
+        if (existingPeer && existingPeer.pc.remoteDescription?.sdp && existingPeer.pc.remoteDescription.sdp === s.data?.sdp) {
+          if (existingPeer.pc.localDescription) {
+            this.sendSignal(
+              'answer',
+              { type: existingPeer.pc.localDescription.type, sdp: existingPeer.pc.localDescription.sdp },
+              s.from,
+            );
+          }
+          return;
+        }
         this.hostId = s.from;
         const peer = this.newPeer(s.from);
         await peer.pc.setRemoteDescription(s.data);
@@ -916,12 +963,12 @@ export class MultiplayerClient {
       }
       if (steps === 0) return;
 
+      this.fire('game:state', structuredClone(this.simulation.state));
       const sendWebRtc = ticks - lastWebRtcTick >= (this.peers.size <= 2 ? 1 : 2); // 60Hz for 1v1/2-guest P2P, 30Hz for larger rooms
       const sendRelay = ticks - lastRelayTick >= relayRates(this.room?.players.length ?? 2).stateIntervalTicks && this.relayPeers.size > 0;
 
       if (sendWebRtc) {
         lastWebRtcTick = ticks;
-        this.fire('game:state', structuredClone(this.simulation.state));
       }
       if (sendRelay) {
         lastRelayTick = ticks;
@@ -1021,7 +1068,7 @@ export class MultiplayerClient {
         if (this.pendingJoin && !this.usingRelay) {
           this.activateRelayFallback(code);
         }
-      }, 3800);
+      }, 4500);
 
       this.joinTimeout = setTimeout(() => {
         if (this.pendingJoin) {
@@ -1051,24 +1098,47 @@ export class MultiplayerClient {
       }
       return this;
     }
+    if (event === 'player:input') {
+      this.sendInput((data?.input ?? data) as PlayerInput, data?.time, data?.seq);
+      return this;
+    }
     if (this.hostId === this.id) {
       this.command(this.id, event, data);
     } else if (this.hostId || this.usingRelay) {
-      if (event === 'player:input') {
-        if (!this.inputLimiter.accept(data?.input ?? data, performance.now(), this.usingRelay, relayRates(this.room?.players.length ?? 2).inputIntervalMs)) return this;
-        const seq = typeof data?.seq === 'number' && data.seq > this.inputSeq ? data.seq : ++this.inputSeq;
-        this.inputSeq = seq;
-        this.sendPeer(
-          this.hostId,
-          'player:input',
-          { seq, input: data?.input ?? data, time: data?.time },
-          true,
-        );
-      } else {
-        this.sendPeer(this.hostId, event, data);
-      }
+      this.sendPeer(this.hostId, event, data);
     }
     return this;
+  }
+
+  sendInput(input: PlayerInput, time?: number, seqOverride?: number): boolean {
+    if (this.hostId === this.id) {
+      this.command(this.id, 'player:input', { input, time, seq: seqOverride });
+      return true;
+    }
+    if (!this.hostId && !this.usingRelay) return false;
+    const isRelay = this.usingRelay || this.relayPeers.has(this.hostId);
+    if (isRelay) {
+      const ch = this.inputRelays.get(this.id);
+      if (ch?.state !== 'joined' || !this.supabase.realtime.isConnected()) return false;
+    } else {
+      const ch = this.peers.get(this.hostId)?.stateChannel;
+      if (!ch || ch.readyState !== 'open' || ch.bufferedAmount > 2048) return false;
+    }
+    if (!this.inputLimiter.accept(input, performance.now(), isRelay, relayRates(this.room?.players.length ?? 2).inputIntervalMs)) {
+      return false;
+    }
+    const prevSeq = this.inputSeq ?? 0;
+    const seq = typeof seqOverride === 'number' && seqOverride > prevSeq ? seqOverride : prevSeq + 1;
+    const sent = this.sendPeer(
+      this.hostId,
+      'player:input',
+      { seq, input, time },
+      true,
+    );
+    if (sent) {
+      this.inputSeq = seq;
+    }
+    return sent;
   }
 
   private leave() {

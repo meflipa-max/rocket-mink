@@ -77,6 +77,8 @@ const _v4 = new THREE.Vector3();
 const _up = new THREE.Vector3(0, 1, 0);
 const _q1 = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
+const _q3 = new THREE.Quaternion();
+const _qIdentity = new THREE.Quaternion();
 const _proj = new THREE.Vector3();
 
 function detectSoftwareWebGL(): boolean {
@@ -135,6 +137,7 @@ export class GameViewportController {
   private prevInput: PlayerInput = { ...NEUTRAL_INPUT };
   private localInputSeq = 0;
   private localVisualPosOffset = new THREE.Vector3();
+  private localVisualQuatOffset = new THREE.Quaternion();
   private cameraPos = new THREE.Vector3(0, 16, -42);
   private cameraLook = new THREE.Vector3(0, 2, 0);
   private trauma = 0;
@@ -146,7 +149,7 @@ export class GameViewportController {
   // Callbacks
   public onHudUpdate?: (hud: HudTelemetry) => void;
   public onEvents?: (events: SimulationEvent[]) => void;
-  public onSendInput?: (input: PlayerInput, time: number, seq: number) => void;
+  public onSendInput?: (input: PlayerInput, time: number, seq: number) => boolean | void;
   public onBallCamChange?: (enabled: boolean) => void;
   public onNameplates?: (plates: NameplateProjection[]) => void;
   public onGoalMarkers?: (markers: GoalMarkerProjection[]) => void;
@@ -348,6 +351,7 @@ export class GameViewportController {
   public startLocalMatch(snapshot: GameStateSnapshot, localId: string): void {
     this.isMultiplayer = false;
     this.localVisualPosOffset.set(0, 0, 0);
+    this.localVisualQuatOffset.identity();
     this.localPlayerId = localId;
     this.replayRecorder.clear();
     this.activeReplayClip = null;
@@ -369,6 +373,7 @@ export class GameViewportController {
     this.prediction.reset();
     this.localInputSeq = 0;
     this.localVisualPosOffset.set(0, 0, 0);
+    this.localVisualQuatOffset.identity();
     this.inputSendAccum = 1;
     this.prevInput = { ...NEUTRAL_INPUT };
     this.isMultiplayer = true;
@@ -414,11 +419,16 @@ export class GameViewportController {
       return;
     }
 
-    // Capture pre-reconciliation visual position so any correction glides out smoothly
+    // Capture pre-reconciliation visual pose so any correction glides out smoothly
     const prevLocal = this.activeState.cars.find((c) => c.id === this.localPlayerId);
     const prevLocalX = prevLocal?.pos.x ?? 0;
     const prevLocalY = prevLocal?.pos.y ?? 0;
     const prevLocalZ = prevLocal?.pos.z ?? 0;
+    if (prevLocal) {
+      _q2.set(prevLocal.quat.x, prevLocal.quat.y, prevLocal.quat.z, prevLocal.quat.w).multiply(this.localVisualQuatOffset);
+    } else {
+      _q2.identity();
+    }
     const prevPhase = this.activeState.phase;
     const prevDemo = (prevLocal?.demolishedTimer ?? 0) > 0;
 
@@ -430,6 +440,7 @@ export class GameViewportController {
       this.activeState = this.prediction.reconcile(this.activeState, snapshot, this.localPlayerId);
       this.syncCarRigsFromState(this.activeState);
       this.localVisualPosOffset.set(0, 0, 0);
+      this.localVisualQuatOffset.identity();
     } else {
       this.activeState = this.prediction.reconcile(this.activeState, snapshot, this.localPlayerId);
       const nextLocal = this.activeState.cars.find((c) => c.id === this.localPlayerId);
@@ -449,8 +460,15 @@ export class GameViewportController {
         } else if (err >= 3.5) {
           this.localVisualPosOffset.set(0, 0, 0);
         }
+        _q3.set(nextLocal.quat.x, nextLocal.quat.y, nextLocal.quat.z, nextLocal.quat.w).invert().multiply(_q2).normalize();
+        if (_q3.angleTo(_qIdentity) < Math.PI * 0.45 && err < 3.5) {
+          this.localVisualQuatOffset.copy(_q3);
+        } else {
+          this.localVisualQuatOffset.identity();
+        }
       } else {
         this.localVisualPosOffset.set(0, 0, 0);
+        this.localVisualQuatOffset.identity();
       }
     }
   }
@@ -832,8 +850,11 @@ export class GameViewportController {
           this.inputSendAccum >= 1 / 10
         ) {
           this.inputSendAccum = 0;
-          this.localInputSeq += 1;
-          this.onSendInput?.(input, this.prediction.time, this.localInputSeq);
+          const candidateSeq = this.localInputSeq + 1;
+          const sent = this.onSendInput?.(input, this.prediction.time, candidateSeq);
+          if (sent !== false) {
+            this.localInputSeq = candidateSeq;
+          }
         }
         this.prevInput = input;
 
@@ -993,8 +1014,11 @@ export class GameViewportController {
     // Visual interpolation & boost particle emission
     const ballInterp = this.isMultiplayer ? clamp(1 - Math.exp(-26 * dt), 0, 1) : 1;
     const remoteInterp = this.isMultiplayer ? clamp(1 - Math.exp(-24 * dt), 0, 1) : 1;
-    this.localVisualPosOffset.multiplyScalar(Math.exp(-16 * dt));
+    const visualDecay = 1 - Math.exp(-16 * dt);
+    this.localVisualPosOffset.multiplyScalar(1 - visualDecay);
     if (this.localVisualPosOffset.lengthSq() < 1e-6) this.localVisualPosOffset.set(0, 0, 0);
+    this.localVisualQuatOffset.slerp(_qIdentity, visualDecay);
+    if (this.localVisualQuatOffset.angleTo(_qIdentity) < 1e-4) this.localVisualQuatOffset.identity();
 
     _v1.set(
       this.activeState.ball.pos.x,
@@ -1039,7 +1063,7 @@ export class GameViewportController {
       if (car.id === this.localPlayerId && this.isMultiplayer && !this.isLocalHost) {
         // Guest local car renders with 0ms driving lag + smooth error decay
         disp.pos.copy(_v1).add(this.localVisualPosOffset);
-        disp.quat.copy(_q1);
+        disp.quat.copy(_q1).multiply(this.localVisualQuatOffset).normalize();
       } else if (disp.pos.distanceTo(_v1) > 8) {
         disp.pos.copy(_v1);
         disp.quat.copy(_q1);

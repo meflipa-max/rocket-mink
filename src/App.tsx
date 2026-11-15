@@ -284,7 +284,7 @@ export default function App() {
     ctrl.onGoalMarkers = (markers) => setGoalMarkers(markers);
     ctrl.onEvents = handleEvents;
     ctrl.onSendInput = (input, time, seq) => {
-      socketRef.current?.emit('player:input', { input, time, seq });
+      return socketRef.current?.sendInput(input, time, seq) ?? false;
     };
     ctrl.onPauseToggle = () => {
       if (screenStateRef.current === 'playing') {
