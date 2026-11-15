@@ -10,17 +10,27 @@ export function resolveBallContact(car: CarState, ball: BallState, maxBallSpeed:
   const distanceSq = lenSqV3(difference);
   if (distanceSq >= ball.radius ** 2) return false;
   const distance = Math.sqrt(distanceSq);
-  let normal = distance > 1e-6 ? scaleV3(difference, 1 / distance) : v3();
+  let localNormal = distance > 1e-6 ? scaleV3(difference, 1 / distance) : v3();
   let penetration = ball.radius - distance;
   if (distance <= 1e-6) {
     // An embedded center exits through the nearest face, never an arbitrary diagonal.
     const axes = ['x', 'y', 'z'] as const;
     const axis = axes.reduce((best, candidate) => CAR_HALF_EXTENTS[candidate] - Math.abs(localBall[candidate]) < CAR_HALF_EXTENTS[best] - Math.abs(localBall[best]) ? candidate : best, 'y');
-    normal[axis] = Math.sign(localBall[axis]) || 1;
-    closest[axis] = normal[axis] * CAR_HALF_EXTENTS[axis];
+    localNormal[axis] = Math.sign(localBall[axis]) || 1;
+    closest[axis] = localNormal[axis] * CAR_HALF_EXTENTS[axis];
     penetration += CAR_HALF_EXTENTS[axis] - Math.abs(localBall[axis]);
+  } else {
+    const horizLen = Math.hypot(difference.x, difference.z);
+    // On ground, the ball center sits ~1.09m above the car center (0.56m vs 1.65m).
+    // Adjusting the effective upper bumper reference prevents forward strikes from popping
+    // the ball steeply over the car's roof while keeping aerial/roof contacts natural.
+    if (horizLen > 0.25 && localBall.y > CAR_HALF_EXTENTS.y) {
+      const bumperEffectiveTop = CAR_HALF_EXTENTS.y + 0.56;
+      const hitDiffY = Math.max(0, localBall.y - bumperEffectiveTop) * 0.65;
+      localNormal = normV3(v3(difference.x, hitDiffY, difference.z));
+    }
   }
-  normal = normV3(rotateVecByQuat(normal, car.quat));
+  const normal = normV3(rotateVecByQuat(localNormal, car.quat));
   const contactArm = rotateVecByQuat(closest, car.quat);
   ball.pos = addV3(ball.pos, scaleV3(normal, penetration + 0.02));
   // The chassis contact point (not the ball center) determines a rotating bumper's speed.

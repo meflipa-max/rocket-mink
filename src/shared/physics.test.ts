@@ -554,4 +554,47 @@ test('shot and save notifications correspond to actual goal-directed actions', (
   }
 });
 
+test('car on the ceiling falls down quickly when not using turbo', () => {
+  for (const hasThrottle of [false, true]) {
+    const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'NoSpiderman', team: 'blue' }]);
+    const car = state.cars[0];
+    car.pos = v3(0, ARENA_HEIGHT - CAR_RIDE_HEIGHT, 0);
+    car.quat = { x: 0, y: 0, z: 1, w: 0 }; // upside down
+    car.vel = v3(0, 0, 18);
+    car.onGround = true;
+    car.groundNormal = v3(0, -1, 0);
+    car.boost = 0;
+
+    for (let i = 0; i < 60; i++) {
+      stepSimulation(state, { p1: { ...NEUTRAL_INPUT, throttle: hasThrottle ? 1 : 0, boost: false } }, 1 / 60);
+    }
+    assert.equal(car.onGround, false, 'Car without boost must detach from ceiling');
+    assert.ok(car.pos.y < ARENA_HEIGHT - 4.0, `Expected car to fall from ceiling, stayed at y=${car.pos.y}`);
+  }
+});
+
+test('driving forward into a grounded ball keeps the ball ahead instead of passing over the car roof', () => {
+  for (const boost of [false, true]) {
+    const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'Dribbler', team: 'blue' }]);
+    const car = state.cars[0];
+    car.pos = v3(0, CAR_RIDE_HEIGHT, -20);
+    car.quat = quatFromYaw(0);
+    car.vel = v3(0, 0, boost ? 29 : 21);
+    car.boost = 100;
+    state.ball.pos = v3(0, BALL_RADIUS, -14);
+    state.ball.vel = v3();
+
+    let passedOverhead = false;
+    for (let i = 0; i < 60; i++) {
+      stepSimulation(state, { p1: { ...NEUTRAL_INPUT, throttle: 1, boost } }, 1 / 60);
+      if (state.ball.pos.z < car.pos.z + 0.5 && state.ball.pos.y > car.pos.y + 1.8) {
+        passedOverhead = true;
+      }
+    }
+    assert.equal(passedOverhead, false, `Ball passed overhead during forward drive (boost=${boost})`);
+    assert.ok(state.ball.pos.z > car.pos.z + 1.0, 'Ball should stay ahead of the car');
+    assert.ok(state.ball.pos.y < 5.0, `Ball stayed too high: y=${state.ball.pos.y}`);
+  }
+});
+
 

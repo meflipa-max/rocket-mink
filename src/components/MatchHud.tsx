@@ -90,7 +90,7 @@ export function MatchHud({
       {hud.godModeSeconds > 0 && hud.phase === 'active' && !isReplay && (
         <div role="status" className="god-mode-banner fixed bottom-7 left-1/2 -translate-x-1/2 rounded-2xl border border-white/70 px-6 py-3 text-center text-white shadow-lg">
           <div className="font-display text-xl font-black tracking-wider">★ GOD MODE · {Math.ceil(hud.godModeSeconds)}s</div>
-          <div className="text-xs font-semibold">Velocità extra · Invincibile · Demolisci al contatto</div>
+          <div className="text-xs font-semibold">Velocità extra · Magnete potenziato · Curva stretta · Invincibile</div>
         </div>
       )}
       {action && !isReplay && hud.phase === 'active' && (

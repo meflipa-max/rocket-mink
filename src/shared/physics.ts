@@ -484,17 +484,20 @@ function stepCarsOnly(
         car.vel = subV3(car.vel, scaleV3(forward, coastDrop));
       }
 
-      // Lateral tire grip (reduced during handbrake/powerslide for authentic drifts!)
-      const grip = input.handbrake ? 2.6 : 14.5;
+      // Lateral tire grip (reduced during handbrake/powerslide, sharper in God Mode!)
+      const grip = input.handbrake
+        ? godMode ? 4.8 : 2.6
+        : godMode ? 28.0 : 14.5;
       const latDamp = clamp(grip * dt, 0, 1);
       car.vel = subV3(car.vel, scaleV3(left, lateralSpeed * latDamp));
 
-      // Steering (speed-dependent turn rate, tighter during powerslide)
+      // Steering (speed-dependent turn rate, tighter during powerslide and God Mode)
       const steer = clamp(input.steer, -1, 1);
-      car.steerAngle = lerp(car.steerAngle, steer * 0.42, clamp(16 * dt, 0, 1));
-      const speedFactor = clamp(Math.abs(forwardSpeed) / 9.0, 0, 1);
+      car.steerAngle = lerp(car.steerAngle, steer * (godMode ? 0.56 : 0.42), clamp(16 * dt, 0, 1));
+      const speedFactor = clamp(Math.abs(forwardSpeed) / (godMode ? 5.5 : 9.0), 0, 1);
       const turnDir = forwardSpeed >= -0.5 ? 1 : -1;
-      const turnRate = input.handbrake ? 3.4 : 2.55;
+      const baseTurnRate = input.handbrake ? 3.4 : 2.55;
+      const turnRate = godMode ? baseTurnRate * 1.65 : baseTurnRate;
       const yawDelta = steer * turnDir * turnRate * speedFactor * dt;
       if (Math.abs(yawDelta) > 1e-5) {
         const yawQ = quatFromAxisAngle(car.groundNormal, yawDelta);
@@ -507,9 +510,23 @@ function stepCarsOnly(
       const targetQuat = normQuat(mulQuat(alignQ, car.quat));
       car.quat = slerpQuat(car.quat, targetQuat, clamp(24 * dt, 0, 1));
 
-      // Floor gravity vs curved ramp / vertical wall wheel adhesion
-      const isSteepWall = car.groundNormal.y < 0.65;
-      if (car.groundNormal.y < 0.35 && Math.abs(forwardSpeed) < 7.0) {
+      // Floor gravity vs curved ramp / vertical wall / ceiling wheel adhesion
+      const isCeiling = car.groundNormal.y < -0.25;
+      const isSteepWall = !isCeiling && car.groundNormal.y < 0.65;
+      if (isCeiling) {
+        if (isBoosting && Math.abs(forwardSpeed) > 10.0) {
+          // Active boost at speed temporarily sustains inverted ceiling traction
+          const adhesion = 18.0 + Math.abs(forwardSpeed) * 0.6;
+          car.vel = subV3(car.vel, scaleV3(car.groundNormal, adhesion * dt));
+          car.vel.y += GRAVITY * 0.6 * dt;
+        } else {
+          // Without active boost on the ceiling, gravity pulls the car down cleanly
+          car.vel.y += GRAVITY * dt;
+          if (car.vel.y < -1.2) {
+            car.onGround = false;
+          }
+        }
+      } else if (car.groundNormal.y < 0.35 && Math.abs(forwardSpeed) < 7.0) {
         // Lose wall grip if too slow on a near-vertical wall -> detach smoothly
         car.onGround = false;
         car.vel.y += GRAVITY * dt;
@@ -645,11 +662,12 @@ function stepCarsOnly(
         // Rocket League Aerial Control:
         // - Q/E = Directional Air Roll (Avvitamento)
         // - Holding Handbrake (X/K/Ctrl) + A/D = Free Air Roll (stile RL!)
-        const pitchRate = -input.pitch * 4.2;
+        const airAgility = godMode ? 1.35 : 1.0;
+        const pitchRate = -input.pitch * 4.2 * airAgility;
         const freeAirRoll = input.handbrake ? -input.yaw : 0;
         const activeRoll = input.roll !== 0 ? input.roll : freeAirRoll;
-        const yawRate = input.handbrake ? 0 : input.yaw * 3.8;
-        const rollRate = activeRoll * 6.4;
+        const yawRate = (input.handbrake ? 0 : input.yaw * 3.8) * airAgility;
+        const rollRate = activeRoll * 6.4 * airAgility;
 
         if (Math.abs(pitchRate) > 1e-4) {
           car.quat = mulQuat(car.quat, quatFromAxisAngle(v3(1, 0, 0), pitchRate * dt));
@@ -718,13 +736,15 @@ function stepCarsOnly(
         car.groundNormal = { ...hit.normal };
       }
     } else if (car.onGround) {
-      // Probe below wheels (generous distance so curved ramps & wall transitions stay glued!)
-      const probePos = subV3(car.pos, scaleV3(car.groundNormal, 0.75));
+      // Probe below wheels (generous on floor/walls, tighter on ceiling so cars detach cleanly)
+      const onCeiling = car.groundNormal.y < -0.25;
+      const probeDist = onCeiling ? 0.32 : 0.75;
+      const probePos = subV3(car.pos, scaleV3(car.groundNormal, probeDist));
       const probe = resolveArenaSphere(probePos, CAR_RIDE_HEIGHT);
-      if (probe.hit && probe.isFloorOrRamp) {
+      if (probe.hit && probe.isFloorOrRamp && !(onCeiling && dotV3(car.vel, probe.normal) > 0.6)) {
         car.groundNormal = { ...probe.normal };
-        // Pull gently onto curved surface to avoid micro-hops
-        if (probe.penetration < 0.72) {
+        // Pull gently onto curved surface to avoid micro-hops (never pull back onto ceiling)
+        if (!onCeiling && probe.penetration < 0.72) {
           const gap = Math.max(0, 0.75 - probe.penetration);
           if (gap > 0.02 && gap < 0.45) {
             car.pos = subV3(car.pos, scaleV3(probe.normal, gap * 0.5));

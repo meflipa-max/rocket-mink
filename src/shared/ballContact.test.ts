@@ -98,3 +98,19 @@ test('surface friction transfers spin in mirrored directions and extreme hits ke
   assert.equal(ball.vel.x, 0);
   assert.equal(ball.vel.y, 0);
 });
+
+test('grounded forward hit drives the ball ahead with low loft instead of popping over the car roof', () => {
+  for (const carSpeed of [18, 28]) {
+    const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p', name: 'Striker', team: 'blue' }]);
+    const car = state.cars[0];
+    car.pos = v3(0, 0.56, 0);
+    car.quat = quatFromYaw(0);
+    car.vel = v3(0, 0, carSpeed);
+    state.ball.pos = v3(0, 1.65, 2.95);
+    state.ball.vel = v3();
+    assert.ok(resolveBallContact(car, state.ball, MAX_BALL_SPEED));
+    assert.ok(state.ball.vel.z > 24, `Expected strong forward drive, got vel.z=${state.ball.vel.z}`);
+    assert.ok(state.ball.vel.y < 4.5, `Expected low loft without overhead pop, got vel.y=${state.ball.vel.y}`);
+    assert.ok(state.ball.vel.z > state.ball.vel.y * 4, 'Forward velocity must dominate vertical pop');
+  }
+});
