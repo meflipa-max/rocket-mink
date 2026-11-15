@@ -30,6 +30,8 @@ import { animateGodModeCar, createGodModeItemVisual } from './godModeVisual';
 export type ViewportMode = 'title' | 'garage' | 'playing' | 'paused' | 'gameover';
 
 export interface HudTelemetry {
+  fps?: number;
+  network?: { transport: 'host' | 'p2p' | 'relay'; rttMs: number | null };
   godModeSeconds: number;
   godModeItemMarker?: { x: number; y: number; distance: number; offscreen: boolean; angle: number } | null;
   boost: number;
@@ -151,6 +153,8 @@ export class GameViewportController {
   public onSkipReplay?: () => void;
 
   private hudAccum = 0;
+  private overlayAccum = 0;
+  private currentFps = 60;
   private inputSendAccum = 0;
   private lastNetPacketMs = 0;
   private replayRecorder = new GoalReplayRecorder();
@@ -173,7 +177,7 @@ export class GameViewportController {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.12;
     this.renderer.setPixelRatio(
-      this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 2),
+      this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.5),
     );
     this.renderer.shadowMap.enabled = !this.isSoftwareGl;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -318,6 +322,7 @@ export class GameViewportController {
     const speed = Math.hypot(localCar.vel.x, localCar.vel.y, localCar.vel.z);
     const onWall = localCar.onGround && localCar.groundNormal.y < 0.7;
     this.onHudUpdate?.({
+      fps: Math.round(this.currentFps),
       godModeSeconds: localCar.godModeTimer ?? 0,
       godModeItemMarker: this.getGodModeItemMarker(),
       boost: Math.round(localCar.boost),
@@ -622,6 +627,7 @@ export class GameViewportController {
   };
 
   private handleBlur = () => {
+    soundEngine.setGodModeMusic(false);
     this.keys.clear();
     this.mouseBoost = false;
     this.mouseJump = false;
@@ -663,12 +669,12 @@ export class GameViewportController {
             this.frameId = window.setTimeout(poll, 5);
           } else {
             if (sync) gl.deleteSync(sync);
-            this.frameId = window.setTimeout(cb, 80);
+            this.frameId = window.setTimeout(cb, 8);
           }
         };
         this.frameId = window.setTimeout(poll, 5);
       } else {
-        this.frameId = window.setTimeout(cb, 80);
+        this.frameId = window.setTimeout(cb, 8);
       }
     };
 
@@ -676,6 +682,7 @@ export class GameViewportController {
       if (this.disposed) return;
       const now = performance.now();
       const rawDt = (now - this.lastTimeMs) / 1000;
+      if (rawDt > 0) this.currentFps = lerp(this.currentFps, 1 / rawDt, 0.12);
       this.lastTimeMs = now;
       const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
 
@@ -698,6 +705,10 @@ export class GameViewportController {
 
   private update(dt: number): void {
     this.elapsed += dt;
+    this.overlayAccum += dt;
+    const updateOverlays = this.overlayAccum >= 1 / 20;
+    if (updateOverlays) this.overlayAccum %= 1 / 20;
+    if (this.mode !== 'playing' || this.paused || document.hidden) soundEngine.setGodModeMusic(false);
     this.godModeItem.update(this.activeState?.powerUps?.item, this.elapsed, (this.mode === 'playing' || this.mode === 'paused') && this.activeState?.phase === 'active');
     for (let i = this.boomSprites.length - 1; i >= 0; i--) {
       const boom = this.boomSprites[i];
@@ -923,8 +934,10 @@ export class GameViewportController {
       }
 
       soundEngine.updateContinuous(false, 0, false);
-      this.onNameplates?.([]);
-      this.onGoalMarkers?.([]);
+      if (updateOverlays) {
+        this.onNameplates?.([]);
+        this.onGoalMarkers?.([]);
+      }
       this.stadium.update(this.elapsed, this.activeState.boostPads);
       this.particles.update(dt);
       this.hudAccum += dt;
@@ -1080,7 +1093,7 @@ export class GameViewportController {
       }
     }
 
-    this.onNameplates?.(plates);
+    if (updateOverlays) this.onNameplates?.(plates);
 
     // Project Blue (-Z) and Orange (+Z) goal markers so players always know which goal to attack/defend
     const goalMarkers: GoalMarkerProjection[] = [];
@@ -1105,7 +1118,7 @@ export class GameViewportController {
       const side = relX < -0.15 ? 'left' : relX > 0.15 ? 'right' : 'center';
       goalMarkers.push({ team, x: sx, y: sy, inFront, visible, side });
     }
-    this.onGoalMarkers?.(goalMarkers);
+    if (updateOverlays) this.onGoalMarkers?.(goalMarkers);
 
     // Camera Follow Rig (Ball Cam or Car Cam)
     if (localCar) {
@@ -1157,6 +1170,7 @@ export class GameViewportController {
         this.mode === 'playing' &&
         this.activeState.phase === 'active';
       soundEngine.updateContinuous(this.mode === 'playing' && !this.paused && this.activeState.phase === 'active' && localCar.demolishedTimer <= 0 && !document.hidden, speed, isActiveBoost, input.throttle, localCar.onGround, input.handbrake);
+      soundEngine.setGodModeMusic(localCar.godModeTimer > 0 && this.mode === 'playing' && !this.paused && this.activeState.phase === 'active' && !document.hidden);
     }
 
     this.stadium.update(this.elapsed, this.activeState.boostPads);
@@ -1169,6 +1183,7 @@ export class GameViewportController {
       const speed = Math.hypot(localCar.vel.x, localCar.vel.y, localCar.vel.z);
       const onWall = localCar.onGround && localCar.groundNormal.y < 0.7;
       this.onHudUpdate?.({
+        fps: Math.round(this.currentFps),
         godModeSeconds: localCar.godModeTimer ?? 0,
         godModeItemMarker: this.getGodModeItemMarker(),
         boost: Math.round(localCar.boost),
@@ -1253,6 +1268,7 @@ export class GameViewportController {
   }
 
   public dispose(): void {
+    soundEngine.setGodModeMusic(false);
     this.disposed = true;
     cancelAnimationFrame(this.frameId);
     clearTimeout(this.frameId);

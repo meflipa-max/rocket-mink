@@ -22,6 +22,51 @@ class SoundEngine {
   private crowdGain: GainNode | null = null;
 
   private started = false;
+  private godMusicBus: GainNode | null = null;
+  private godMusicNotes = new Set<OscillatorNode>();
+  private godMusicNextAt = 0;
+  private godMusicPlaying = false;
+
+  /** Original short playful arpeggio, scheduled sparsely and stopped with the effect. */
+  public setGodModeMusic(active: boolean): void {
+    if (!this.ctx || !this.compressor) return;
+    const now = this.ctx.currentTime;
+    if (!active || this.muted) {
+      if (!this.godMusicPlaying) return;
+      this.godMusicPlaying = false;
+      this.godMusicBus?.gain.setTargetAtTime(0, now, 0.015);
+      for (const note of this.godMusicNotes) { try { note.stop(now + 0.04); } catch {} }
+      this.godMusicNotes.clear();
+      this.godMusicNextAt = 0;
+      return;
+    }
+    if (!this.godMusicBus) {
+      this.godMusicBus = this.ctx.createGain();
+      this.godMusicBus.connect(this.compressor);
+    }
+    this.godMusicPlaying = true;
+    this.godMusicBus.gain.setTargetAtTime(0.23, now, 0.025);
+    if (this.godMusicNextAt > now + 0.2) return;
+    const melody = [659.25, 783.99, 880, 783.99, 1046.5, 987.77, 880, 783.99, 659.25, 783.99, 587.33, 659.25, 523.25, 587.33, 659.25, 783.99];
+    const start = Math.max(now, this.godMusicNextAt);
+    melody.forEach((frequency, index) => {
+      const oscillator = this.ctx!.createOscillator();
+      const envelope = this.ctx!.createGain();
+      const at = start + index * 0.12;
+      oscillator.type = index % 4 === 0 ? 'square' : 'triangle';
+      oscillator.frequency.value = frequency;
+      envelope.gain.setValueAtTime(0.0001, at);
+      envelope.gain.exponentialRampToValueAtTime(index % 4 === 0 ? 0.24 : 0.4, at + 0.008);
+      envelope.gain.exponentialRampToValueAtTime(0.0001, at + 0.1);
+      oscillator.connect(envelope);
+      envelope.connect(this.godMusicBus!);
+      this.godMusicNotes.add(oscillator);
+      oscillator.onended = () => { this.godMusicNotes.delete(oscillator); oscillator.disconnect(); envelope.disconnect(); };
+      oscillator.start(at);
+      oscillator.stop(at + 0.11);
+    });
+    this.godMusicNextAt = start + melody.length * 0.12;
+  }
 
   public isMuted(): boolean {
     return this.muted;
@@ -49,6 +94,7 @@ class SoundEngine {
 
   public setMuted(mute: boolean): void {
     this.muted = mute;
+    if (mute) this.setGodModeMusic(false);
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
     if (this.masterGain) {

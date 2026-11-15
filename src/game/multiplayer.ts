@@ -1,5 +1,6 @@
 import { createClient, type RealtimeChannel } from '@supabase/supabase-js';
 import { HostSimulation } from '../shared/hostSimulation';
+import { FixedStepClock, InputRateLimiter, relayRates } from '../shared/networkFlow';
 import {
   packCompactSnapshot,
   unpackCompactSnapshot,
@@ -66,6 +67,9 @@ export class MultiplayerClient {
   );
   private signal: RealtimeChannel;
   private roomChannel: RealtimeChannel | null = null;
+  private inputRelays = new Map<string, RealtimeChannel>();
+  private inputLimiter = new InputRateLimiter();
+  private lastRelayImpactAt = -Infinity;
   private relayReady = false;
   private usingRelay = false;
   private relayPeers = new Set<string>();
@@ -90,6 +94,7 @@ export class MultiplayerClient {
   private lastPeerInputSeq = new Map<string, number>();
   private lastPeerSeen = new Map<string, number>();
   private lastHostPacketAt = 0;
+  private rttMs: number | null = null;
   private wireTemplate: GameStateSnapshot | null = null;
 
   private readonly handlePageHide = () => {
@@ -105,22 +110,7 @@ export class MultiplayerClient {
     this.signal.on('broadcast', { event: 'signal' }, ({ payload }) => {
       void this.onSignal(payload as Signal);
     });
-    this.signal.subscribe((status) => {
-      if (this.closed) return;
-      if (status === 'SUBSCRIBED') {
-        this.connected = true;
-        this.fire('connect');
-        if (this.queuedJoin) {
-          const queued = this.queuedJoin;
-          this.queuedJoin = null;
-          this.emit('room:join', queued);
-        }
-      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-        const wasConnected = this.connected;
-        this.connected = false;
-        this.fire(wasConnected ? 'disconnect' : 'connect_error');
-      }
-    });
+    this.signal.subscribe((status) => this.onSignalStatus(status));
     if (typeof window !== 'undefined') {
       window.addEventListener('pagehide', this.handlePageHide);
     }
@@ -132,11 +122,35 @@ export class MultiplayerClient {
     return this;
   }
 
+  getNetworkStats() {
+    return { transport: this.isHost ? 'host' : this.usingRelay ? 'relay' : 'p2p', rttMs: this.rttMs } as const;
+  }
+
+  private onSignalStatus(status: string) {
+    if (this.closed) return;
+    if (status === 'SUBSCRIBED') {
+      this.connected = true;
+      this.fire('connect');
+      if (this.queuedJoin) {
+        const queued = this.queuedJoin;
+        this.queuedJoin = null;
+        this.emit('room:join', queued);
+      }
+    } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+      const wasConnected = this.connected;
+      this.connected = false;
+      // Discovery is independent of the current match. Its retry must never kick a player.
+      if (this.room) this.fire('signaling:status', 'reconnecting');
+      else this.fire(wasConnected ? 'disconnect' : 'connect_error');
+    }
+  }
+
   private fire(event: string, value?: any) {
     this.handlers.get(event)?.forEach((fn) => fn(value));
   }
 
   private sendSignal(kind: string, data?: any, to?: string) {
+    if (!this.connected || this.signal.state !== 'joined' || !this.supabase.realtime.isConnected()) return;
     void this.signal.send({
       type: 'broadcast',
       event: 'signal',
@@ -181,12 +195,27 @@ export class MultiplayerClient {
       }
     }
     if (this.relayPeers.size > 0) {
-      this.sendRoomRelay(event, payload);
+      if (event === 'game:events' && Array.isArray(payload)) {
+        const now = performance.now();
+        const sendImpacts = now - this.lastRelayImpactAt >= 300;
+        const relayEvents = payload.filter((item) => sendImpacts || (item.type !== 'ball_hit' && item.type !== 'wall_hit'));
+        if (sendImpacts && relayEvents.length) this.lastRelayImpactAt = now;
+        if (relayEvents.length) this.sendRoomRelay(event, relayEvents);
+      } else {
+        this.sendRoomRelay(event, payload);
+      }
     }
   }
 
   private sendPeer(id: string, event: string, payload?: any, unreliable = false) {
     if (this.relayPeers.has(id) || (this.usingRelay && id === this.hostId)) {
+      if (event === 'player:input' || event === 'ping' || event === 'pong') {
+        const channel = this.inputRelays.get(this.isHost ? id : this.id);
+        if (channel?.state === 'joined' && this.supabase.realtime.isConnected()) {
+          void channel.send({ type: 'broadcast', event: 'peer', payload: { from: this.id, to: id, event, data: payload } });
+        }
+        return;
+      }
       this.sendRoomRelay(event, payload, id);
       return;
     }
@@ -201,6 +230,7 @@ export class MultiplayerClient {
   }
 
   private openRoomChannel(code: string, onSubscribed?: () => void) {
+    if (this.hostId !== this.id) this.openInputRelay(this.id, code);
     if (this.roomChannel) {
       void this.supabase.removeChannel(this.roomChannel);
       this.roomChannel = null;
@@ -215,6 +245,7 @@ export class MultiplayerClient {
       if (this.hostId === this.id) {
         if (payload.event === 'join' || payload.event === 'relay:attach') {
           this.relayPeers.add(payload.from);
+          this.openInputRelay(payload.from, code);
           this.lastPeerSeen.set(payload.from, performance.now());
           // Keep ICE negotiation alive so a late direct connection can replace the relay.
           this.handleJoin(payload.from, payload.payload);
@@ -239,11 +270,30 @@ export class MultiplayerClient {
       if (status === 'SUBSCRIBED') {
         this.relayReady = true;
         onSubscribed?.();
+        if (this.room && this.usingRelay && !this.isHost) {
+          this.sendRoomRelay('relay:attach', { ...this.pendingProfile, resuming: true }, this.hostId);
+        }
       } else {
         this.relayReady = false;
       }
     });
     this.roomChannel = channel;
+  }
+
+  private openInputRelay(playerId: string, code: string) {
+    if (this.inputRelays.has(playerId)) return;
+    const channel = this.supabase.channel(`rocket-mink:input:${code}:${playerId}`, { config: { broadcast: { self: false } } });
+    channel.on('broadcast', { event: 'peer' }, ({ payload }) => {
+      if (!this.room || payload?.to !== this.id) return;
+      if (this.isHost) {
+        if (!this.relayPeers.has(playerId) || payload.from !== playerId) return;
+        this.onPeerMessage(playerId, { event: payload.event, payload: payload.data });
+      } else if (playerId === this.id && payload.from === this.hostId) {
+        this.onPeerMessage(this.hostId, { event: payload.event, payload: payload.data });
+      }
+    });
+    this.inputRelays.set(playerId, channel);
+    channel.subscribe();
   }
 
   private activateRelayFallback(code: string) {
@@ -268,12 +318,7 @@ export class MultiplayerClient {
   private switchToRelayMidMatch(code: string) {
     if (this.closed || this.usingRelay || !this.room || this.hostId === this.id) return;
     this.usingRelay = true;
-    const profile = this.pendingProfile || { playerName: 'Pilota' };
-    this.openRoomChannel(code, () => {
-      if (this.room && this.usingRelay && this.hostId !== this.id) {
-        this.sendRoomRelay('relay:attach', profile, this.hostId || undefined);
-      }
-    });
+    this.openRoomChannel(code);
   }
 
   private sweepStalePeers(timeoutMs = PEER_HEARTBEAT_TIMEOUT_MS) {
@@ -308,12 +353,12 @@ export class MultiplayerClient {
       }
 
       if (this.hostId) {
-        this.sendPeer(this.hostId, 'ping', { t: Date.now() }, true);
+        this.sendPeer(this.hostId, 'ping', { t: performance.now() });
         const silentMs = now - this.lastHostPacketAt;
         if (silentMs > 2500 && !this.usingRelay) {
           this.switchToRelayMidMatch(this.room.code);
         } else if (silentMs > 4500 && this.usingRelay && this.relayReady) {
-          this.sendRoomRelay('relay:attach', this.pendingProfile || {}, this.hostId);
+          this.sendRoomRelay('relay:attach', { ...this.pendingProfile, resuming: true }, this.hostId);
         } else if (silentMs > 12500) {
           this.peerLeft(this.hostId);
         }
@@ -369,19 +414,7 @@ export class MultiplayerClient {
         return;
       }
       if (state === 'failed' || state === 'closed') {
-        if (this.hostId !== this.id) {
-          if (this.pendingJoin) {
-            this.activateRelayFallback(this.pendingJoin.code);
-          } else if (this.room && !this.usingRelay) {
-            this.switchToRelayMidMatch(this.room.code);
-          } else {
-            this.peerLeft(id);
-          }
-        } else {
-          // On host, close broken P2P handle cleanly; leave signal or heartbeat timeout will evict player if they don't switch to Relay
-          this.peers.delete(id);
-          peer.pc.close();
-        }
+        this.handleDirectFailure(id, peer);
       }
     };
     return peer;
@@ -390,6 +423,7 @@ export class MultiplayerClient {
   private bindStateChannel(peer: Peer, channel: RTCDataChannel, id: string) {
     peer.stateChannel = channel;
     channel.onopen = () => this.activateDirectChannel(id, peer);
+    channel.onclose = () => this.handleDirectFailure(id, peer);
     channel.onmessage = (e) => {
       try {
         this.onPeerMessage(id, JSON.parse(e.data) as Message, true);
@@ -412,24 +446,23 @@ export class MultiplayerClient {
       }
     };
     channel.onclose = () => {
-      if (this.peers.get(id) !== peer) return;
-      if (this.hostId !== this.id) {
-        if (this.room && !this.usingRelay) {
-          this.switchToRelayMidMatch(this.room.code);
-        } else {
-          this.peerLeft(id);
-        }
-      } else {
-        this.peers.delete(id);
-        peer.pc.close();
-      }
+      this.handleDirectFailure(id, peer);
     };
+  }
+
+  private handleDirectFailure(id: string, peer: Peer) {
+    if (this.peers.get(id) !== peer) return;
+    this.peers.delete(id);
+    peer.pc.close();
+    // A failed ICE attempt is not a failed room: relay membership and simulation survive.
+    if (this.isHost || this.usingRelay) return;
+    if (this.pendingJoin) this.activateRelayFallback(this.pendingJoin.code);
+    else if (this.room) this.switchToRelayMidMatch(this.room.code);
   }
 
   private activateDirectChannel(id: string, peer: Peer) {
     if (peer.channel?.readyState !== 'open' || peer.stateChannel?.readyState !== 'open') return;
     if (this.hostId !== this.id) {
-      this.usingRelay = false;
       peer.channel.send(JSON.stringify({ event: 'transport:p2p' }));
       if (this.pendingJoin) peer.channel.send(JSON.stringify({ event: 'join', payload: this.pendingJoin }));
     }
@@ -438,6 +471,11 @@ export class MultiplayerClient {
   private peerLeft(id: string) {
     const wasWebRtc = this.peers.delete(id);
     const wasRelay = this.relayPeers.delete(id);
+    const inputChannel = this.inputRelays.get(id);
+    if (inputChannel) {
+      this.inputRelays.delete(id);
+      void this.supabase.removeChannel(inputChannel);
+    }
     this.lastPeerInputSeq.delete(id);
     this.lastPeerSeen.delete(id);
     const inRoom =
@@ -604,7 +642,7 @@ export class MultiplayerClient {
           car.customization = existing.customization;
         }
         this.broadcastRoster(this.simulation.state);
-        this.sendPeer(id, 'match:started', this.simulation.state);
+        this.sendPeer(id, payload?.resuming ? 'game:resync' : 'match:started', this.simulation.state);
       }
       return;
     }
@@ -679,15 +717,32 @@ export class MultiplayerClient {
   }
 
   private onPeerMessage(id: string, msg: Message, direct = false) {
-    if (direct) {
-      if (this.hostId === this.id) this.relayPeers.delete(id);
-      else if (id === this.hostId) this.usingRelay = false;
+    // Route changes require a complete two-channel handshake, not a stray late packet.
+    if (direct && msg.event === 'transport:p2p' && this.isHost) {
+      const peer = this.peers.get(id);
+      if (peer?.channel?.readyState === 'open' && peer.stateChannel?.readyState === 'open') {
+        this.relayPeers.delete(id);
+        peer.channel.send(JSON.stringify({ event: 'transport:ready' }));
+      }
+      return;
     }
-    if (msg.event === 'transport:p2p') return;
+    if (direct && msg.event === 'transport:ready' && id === this.hostId) {
+      const peer = this.peers.get(id);
+      if (peer?.channel?.readyState === 'open' && peer.stateChannel?.readyState === 'open') this.usingRelay = false;
+      return;
+    }
     if (this.hostId !== this.id) {
       if (this.hostId && id !== this.hostId) return;
       this.lastHostPacketAt = performance.now();
-      if (msg.event === 'pong') return;
+      if (msg.event === 'pong') {
+        if (typeof msg.payload?.t === 'number') this.rttMs = Math.max(0, performance.now() - msg.payload.t);
+        return;
+      }
+      if (msg.event === 'game:resync') {
+        this.wireTemplate = structuredClone(msg.payload);
+        this.fire('game:state', msg.payload);
+        return;
+      }
       if (msg.event === 'room:joined') {
         this.clearJoinTimers();
         this.pendingJoin = null;
@@ -843,7 +898,7 @@ export class MultiplayerClient {
     this.broadcast('match:started', this.simulation.state);
     this.update();
     let last = performance.now();
-    let accum = 0;
+    const clock = new FixedStepClock();
     let ticks = 0;
     let lastWebRtcTick = 0;
     let lastRelayTick = 0;
@@ -853,20 +908,16 @@ export class MultiplayerClient {
       const now = performance.now();
       const frameDt = Math.min(Math.max((now - last) / 1000, 0), 0.25);
       last = now;
-      accum += frameDt;
-
-      let steps = 0;
-      while (accum >= FIXED_DT && steps < 4) {
+      const steps = clock.advance(frameDt);
+      for (let step = 0; step < steps; step++) {
         const events = this.simulation.step(FIXED_DT);
         if (events.length) this.broadcast('game:events', events);
-        accum -= FIXED_DT;
         ticks += 1;
-        steps += 1;
       }
       if (steps === 0) return;
 
       const sendWebRtc = ticks - lastWebRtcTick >= 2; // 30Hz over unreliable WebRTC DataChannel
-      const sendRelay = ticks - lastRelayTick >= 6 && this.relayPeers.size > 0; // 10Hz; avoid relay congestion
+      const sendRelay = ticks - lastRelayTick >= relayRates(this.room?.players.length ?? 2).stateIntervalTicks && this.relayPeers.size > 0;
 
       if (sendWebRtc) {
         lastWebRtcTick = ticks;
@@ -1004,6 +1055,7 @@ export class MultiplayerClient {
       this.command(this.id, event, data);
     } else if (this.hostId || this.usingRelay) {
       if (event === 'player:input') {
+        if (!this.inputLimiter.accept(data?.input ?? data, performance.now(), this.usingRelay, relayRates(this.room?.players.length ?? 2).inputIntervalMs)) return this;
         this.sendPeer(
           this.hostId,
           'player:input',
@@ -1026,6 +1078,10 @@ export class MultiplayerClient {
     this.room = null;
     this.pendingJoin = null;
     this.wireTemplate = null;
+    this.inputLimiter = new InputRateLimiter();
+    this.rttMs = null;
+    for (const channel of this.inputRelays.values()) void this.supabase.removeChannel(channel);
+    this.inputRelays.clear();
     this.stateSeq = 0;
     this.inputSeq = 0;
     this.lastRecvStateSeq = 0;

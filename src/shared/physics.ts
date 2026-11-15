@@ -13,7 +13,7 @@ import {
 import { GOAL_CELEBRATION_DURATION, GOAL_REPLAY_DURATION } from './replay';
 import { resolveBallContact } from './ballContact';
 import { carTouchesBoostPad } from './boostPickup';
-import { GOD_MODE_SPEED, stepPowerUps } from './powerUps';
+import { applyGodModeMagnet, GOD_MODE_BALL_SPEED, GOD_MODE_SPEED, stepPowerUps } from './powerUps';
 import {
   addV3,
   clamp,
@@ -753,10 +753,11 @@ function stepBall(
   dt: number,
   events: SimulationEvent[],
 ): void {
-  stepBallPhysics(state.ball, dt, events);
+  const magnetic = applyGodModeMagnet(state, dt);
+  stepBallPhysics(state.ball, dt, events, magnetic ? GOD_MODE_BALL_SPEED : MAX_BALL_SPEED);
 }
 
-function stepBallPhysics(ball: BallState, dt: number, events: SimulationEvent[]): void {
+function stepBallPhysics(ball: BallState, dt: number, events: SimulationEvent[], maxSpeed = MAX_BALL_SPEED): void {
 
   // Gravity, air drag & natural deceleration
   ball.vel.y += GRAVITY * 0.92 * dt;
@@ -766,8 +767,8 @@ function stepBallPhysics(ball: BallState, dt: number, events: SimulationEvent[])
 
   // Clamp max ball speed to readable Rocket League-like pace
   const speed = lenV3(ball.vel);
-  if (speed > MAX_BALL_SPEED) {
-    ball.vel = scaleV3(ball.vel, MAX_BALL_SPEED / speed);
+  if (speed > maxSpeed) {
+    ball.vel = scaleV3(ball.vel, maxSpeed / speed);
   }
 
   // Integrate ball pos
@@ -820,11 +821,12 @@ export function predictScoringTeam(ball: BallState): Team | null {
   if (Math.abs(projectedX) > GOAL_HALF_X + ball.radius) return null;
   const future: BallState = { ...ball, pos: { ...ball.pos }, vel: { ...ball.vel }, angVel: { ...ball.angVel } };
   const ignored: SimulationEvent[] = [];
+  const predictionSpeedLimit = Math.max(MAX_BALL_SPEED, lenV3(ball.vel));
   for (let tick = 0; tick < 300; tick++) {
     const goal = checkGoalScored(future.pos, future.radius);
     if (goal) return goal;
     if (Math.sign(future.vel.z) !== direction || Math.abs(future.vel.z) < 1) return null;
-    stepBallPhysics(future, 1 / 60, ignored);
+    stepBallPhysics(future, 1 / 60, ignored, predictionSpeedLimit);
     ignored.length = 0;
   }
   return null;
@@ -841,7 +843,7 @@ function resolveCarBallCollisions(
     if (car.demolishedTimer > 0) continue;
 
     const incomingBall: BallState = { ...ball, pos: { ...ball.pos }, vel: { ...ball.vel }, angVel: { ...ball.angVel } };
-    if (resolveBallContact(car, ball, MAX_BALL_SPEED)) {
+    if (resolveBallContact(car, ball, car.godModeTimer > 0 ? GOD_MODE_BALL_SPEED : MAX_BALL_SPEED)) {
       const hitSpeed = lenV3(ball.vel);
       const previousTouchId = ball.lastTouchPlayerId;
       ball.lastTouchTeam = car.team;

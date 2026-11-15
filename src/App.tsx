@@ -266,7 +266,7 @@ export default function App() {
     controllerRef.current = ctrl;
 
     ctrl.onHudUpdate = (nextHud) => {
-      setHud(nextHud);
+      setHud({ ...nextHud, network: socketRef.current?.getNetworkStats() });
       if (nextHud.phase === 'ended' && screenStateRef.current === 'playing') {
         setCarsSnapshot(ctrl.getCarsSnapshot());
         setScreenState('gameover');

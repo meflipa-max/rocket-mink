@@ -1,4 +1,4 @@
-import { resolveArenaSphere } from './arena';
+import { ARENA_HALF_Z, resolveArenaSphere } from './arena';
 import {
   addV3, dotV3, lenV3, lerpV3, normV3, quatFromUnitVectors, quatIdentity,
   rotateVecByQuat, scaleV3, slerpQuat, subV3, v3,
@@ -15,6 +15,9 @@ export function constrainCamera(pivot: Vec3, desired: Vec3): Vec3 {
     if (!hit.hit) break;
     start = addV3(start, scaleV3(hit.normal, hit.penetration + 0.02));
   }
+  // The main arena is convex. Safe endpoints guarantee a safe segment away from goal posts.
+  if (Math.abs(start.z) < ARENA_HALF_Z - 2 && Math.abs(desired.z) < ARENA_HALF_Z - 2 &&
+      !resolveArenaSphere(desired, CAMERA_RADIUS).hit) return desired;
   const distance = lenV3(subV3(desired, start));
   const steps = Math.max(1, Math.ceil(distance / 0.25));
   let previous = start;

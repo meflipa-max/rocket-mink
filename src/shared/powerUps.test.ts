@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMatchState, MAX_BOOST_SPEED, NEUTRAL_INPUT, resetKickoff, stepSimulation, type SimulationEvent } from './physics';
-import { GOD_MODE_DURATION, GOD_MODE_SPAWN_TIMES, stepPowerUps } from './powerUps';
+import { applyGodModeMagnet, GOD_MODE_DURATION, GOD_MODE_SPAWN_TIMES, stepPowerUps } from './powerUps';
 import { packCompactSnapshot, unpackCompactSnapshot } from './netSnapshot';
 import { v3 } from './math3d';
 
@@ -83,4 +83,26 @@ test('kickoff clears active invincibility and a rematch starts a fresh three-ite
   assert.equal(state.powerUps.spawnCount, 2);
   const rematch = createMatchState('freeplay', 'dfh_night', []);
   assert.deepEqual(rematch.powerUps, { elapsed: 0, spawnCount: 0, item: null });
+});
+
+test('God Mode magnet carries the ball at powered speed and releases it when the effect ends', () => {
+  const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p', name: 'P', team: 'blue' }]);
+  const car = state.cars[0];
+  car.pos = v3(0, 0.56, -65);
+  car.quat = { x: 0, y: 0, z: 0, w: 1 };
+  car.vel = v3(0, 0, 40);
+  car.godModeTimer = 6;
+  state.ball.pos = v3(0, 1.75, -61.2);
+  state.ball.vel = v3();
+  for (let i = 0; i < 120; i++) stepSimulation(state, { p: { ...NEUTRAL_INPUT, throttle: 1 } }, 1 / 60);
+  assert.ok(car.vel.z > 35);
+  assert.ok(state.ball.vel.z > 32, 'Normal ball cap must not prevent a magnetic dribble');
+  assert.ok(state.ball.pos.z > car.pos.z && state.ball.pos.z - car.pos.z < 10, 'Ball stays in front, within capture range');
+  car.godModeTimer = 0;
+  const previous = { ...state.ball.vel };
+  assert.equal(applyGodModeMagnet(state, 1 / 60), false);
+  assert.deepEqual(state.ball.vel, previous);
+  state.ball.pos = v3(40, 2, 0);
+  car.godModeTimer = 6;
+  assert.equal(applyGodModeMagnet(state, 1 / 60), false, 'Distant balls cannot be stolen across the field');
 });

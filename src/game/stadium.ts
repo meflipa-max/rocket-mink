@@ -555,14 +555,23 @@ export function buildStadium(
   const ceilingShape = new THREE.Shape(perimeter.map((_, i) => insetPoint(i, CEILING_RAMP_RADIUS)));
   const ceilingGeo = new THREE.ShapeGeometry(ceilingShape);
   ceilingGeo.rotateX(Math.PI / 2);
-  const ceilingMat = new THREE.MeshStandardMaterial({
-    color: 0x8bbbd5, map: wallTex, transparent: true, opacity: 0.16,
-    side: THREE.DoubleSide, depthWrite: false, roughness: 0.7,
+  const ceilingUV = ceilingGeo.attributes.uv;
+  const ceilingPositions = ceilingGeo.attributes.position;
+  for (let i = 0; i < ceilingUV.count; i++) {
+    ceilingUV.setXY(i, (ceilingPositions.getX(i) + hx) / (2 * hx), (ceilingPositions.getZ(i) + hz) / (2 * hz));
+  }
+  ceilingUV.needsUpdate = true;
+  const ceilingTex = wallTex.clone();
+  ceilingTex.repeat.set(16, 20);
+  ceilingTex.needsUpdate = true;
+  const ceilingMat = new THREE.MeshBasicMaterial({
+    color: 0x92d9ff, map: ceilingTex, transparent: true, opacity: 0.55,
+    side: THREE.DoubleSide, depthWrite: false, alphaTest: 0.02, toneMapped: false,
   });
   const ceiling = new THREE.Mesh(ceilingGeo, ceilingMat);
   ceiling.position.y = ARENA_HEIGHT;
   group.add(ceiling);
-  disposables.push(ceilingGeo, ceilingMat);
+  disposables.push(ceilingGeo, ceilingMat, ceilingTex);
 
   const createGoalSignTexture = (title: string, bgHex: string, borderHex: string) => {
     const canvas = document.createElement('canvas');

@@ -78,6 +78,9 @@ export function MatchHud({
   return (
     <div className="fixed inset-0 z-10 pointer-events-none select-none">
       <div data-testid="build-version" className="fixed right-4 bottom-1 font-mono text-[10px] text-slate-300 hud-text-shadow">{BUILD_LABEL}</div>
+      <div className="fixed left-4 bottom-1 font-mono text-[10px] text-slate-300 hud-text-shadow">
+        {hud.fps ?? '—'} FPS{hud.network && <> · {hud.network.transport === 'host' ? 'HOST' : hud.network.transport === 'p2p' ? 'DIRETTA' : 'RELAY'}{hud.network.rttMs !== null && <> · {Math.round(hud.network.rttMs)} ms</>}</>}
+      </div>
       {hud.godModeItemMarker && !isReplay && (
         <div role="status" className="fixed -translate-x-1/2 -translate-y-1/2 rounded-xl border-2 border-yellow-200 bg-black/85 px-3 py-2 text-center text-yellow-200 shadow-[0_0_28px_#fde047aa]" style={{ left: hud.godModeItemMarker.x, top: hud.godModeItemMarker.y }}>
           <div className="font-display text-lg font-black">★ GOD MODE {hud.godModeItemMarker.offscreen && <span className="inline-block" style={{ transform: `rotate(${hud.godModeItemMarker.angle}deg)` }}>➜</span>}</div>

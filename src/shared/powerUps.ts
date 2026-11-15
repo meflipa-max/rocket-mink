@@ -1,11 +1,42 @@
 import { carTouchesBoostPad } from './boostPickup';
-import { v3 } from './math3d';
+import { BALL_RADIUS, CAR_RIDE_HEIGHT, resolveArenaSphere } from './arena';
+import { addV3, dotV3, lenV3, normV3, rotateVecByQuat, scaleV3, subV3, v3 } from './math3d';
 import type { GameStateSnapshot } from './types';
 import type { SimulationEvent } from './physics';
 
 export const GOD_MODE_DURATION = 6;
 export const GOD_MODE_SPEED = 40;
+export const GOD_MODE_BALL_SPEED = GOD_MODE_SPEED + 3;
 export const GOD_MODE_SPAWN_TIMES = [10, 120, 240] as const;
+
+/** A finite spring in front of the nearest powered car; never teleports or attracts across the field. */
+export function applyGodModeMagnet(state: GameStateSnapshot, dt: number): boolean {
+  let owner = null as GameStateSnapshot['cars'][number] | null;
+  let nearest = 10;
+  for (const car of state.cars) {
+    if (car.godModeTimer <= 0 || car.demolishedTimer > 0) continue;
+    const toBall = subV3(state.ball.pos, car.pos);
+    const distance = lenV3(toBall);
+    const forward = rotateVecByQuat(v3(0, 0, 1), car.quat);
+    if (distance < nearest && dotV3(normV3(toBall, forward), forward) > -0.3) {
+      owner = car;
+      nearest = distance;
+    }
+  }
+  if (!owner) return false;
+  const forward = rotateVecByQuat(v3(0, 0, 1), owner.quat);
+  const up = owner.onGround ? owner.groundNormal : v3(0, 1, 0);
+  let target = addV3(addV3(owner.pos, scaleV3(forward, 3.8)), scaleV3(up, BALL_RADIUS - CAR_RIDE_HEIGHT + 0.1));
+  for (let i = 0; i < 3; i++) {
+    const hit = resolveArenaSphere(target, state.ball.radius);
+    if (!hit.hit) break;
+    target = addV3(target, scaleV3(hit.normal, hit.penetration + 0.01));
+  }
+  const spring = addV3(scaleV3(subV3(target, state.ball.pos), 25), scaleV3(subV3(owner.vel, state.ball.vel), 12));
+  const acceleration = scaleV3(spring, Math.min(1, 180 / Math.max(1e-8, lenV3(spring))));
+  state.ball.vel = addV3(state.ball.vel, scaleV3(acceleration, Math.max(0, Math.min(dt, 0.05))));
+  return true;
+}
 
 /** Host-owned schedule: three appearances across active match time, never during replays. */
 export function stepPowerUps(state: GameStateSnapshot, dt: number, events: SimulationEvent[]) {
