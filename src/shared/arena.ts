@@ -5,8 +5,9 @@ import { clamp, normV3 } from './math3d';
 export const ARENA_HALF_X = 62.0; // Total width = 124m
 export const ARENA_HALF_Z = 84.0; // Total length = 168m
 export const ARENA_HEIGHT = 26.0; // Ceiling height
-export const CORNER_CHAMFER = 18.0; // 45-degree corner chamfer cut
-export const RAMP_RADIUS = 6.5; // Smooth floor-to-wall & wall-to-ceiling curve radius
+export const CORNER_CHAMFER = 12.0; // Compact corners leave longer flat walls
+export const RAMP_RADIUS = 4.0; // Floor-to-wall curve
+export const CEILING_RAMP_RADIUS = 3.0; // Tighter upper curve and a broad flat ceiling
 export const GOAL_HALF_X = 11.5; // Goal width = 23m
 export const GOAL_HEIGHT = 7.8; // Goal height = 7.8m
 export const GOAL_DEPTH = 10.5; // Goal net depth
@@ -173,17 +174,17 @@ export function resolveArenaSphere(pos: Vec3, radius: number): SurfaceHit {
       if (pen > maxPen) {
         maxPen = pen;
         bestNormal = wallNormal;
-        isFloorOrRamp = pos.y < ARENA_HEIGHT - RAMP_RADIUS;
+        isFloorOrRamp = true;
       }
     }
   }
 
   // 4. Curved Ceiling-to-Wall transition & flat Ceiling
-  if (minWallDist < RAMP_RADIUS && pos.y > ARENA_HEIGHT - RAMP_RADIUS) {
-    const dx = RAMP_RADIUS - minWallDist;
-    const dy = pos.y - (ARENA_HEIGHT - RAMP_RADIUS);
+  if (minWallDist < CEILING_RAMP_RADIUS && pos.y > ARENA_HEIGHT - CEILING_RAMP_RADIUS) {
+    const dx = CEILING_RAMP_RADIUS - minWallDist;
+    const dy = pos.y - (ARENA_HEIGHT - CEILING_RAMP_RADIUS);
     const distToFilletCenter = Math.sqrt(dx * dx + dy * dy);
-    const maxAllowed = RAMP_RADIUS - radius;
+    const maxAllowed = CEILING_RAMP_RADIUS - radius;
     if (distToFilletCenter > maxAllowed) {
       const pen = distToFilletCenter - maxAllowed;
       if (pen > maxPen) {
@@ -193,6 +194,7 @@ export function resolveArenaSphere(pos: Vec3, radius: number): SurfaceHit {
           y: -dy,
           z: wallNormal.z * dx,
         });
+        isFloorOrRamp = true;
       }
     }
   } else if (pos.y > ARENA_HEIGHT - radius) {

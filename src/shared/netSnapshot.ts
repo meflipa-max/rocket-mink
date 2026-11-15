@@ -8,6 +8,9 @@ import type {
 } from './types';
 
 export interface CompactCarWire {
+  gm?: number;
+  it?: number;
+  aj?: number;
   id: string;
   p: [number, number, number];
   v: [number, number, number];
@@ -15,7 +18,7 @@ export interface CompactCarWire {
   b: number;
   ws: number;
   sa: number;
-  /** Bitmask: 1=onGround, 2=hasDoubleJump, 4=isFlipping, 8=supersonic */
+  /** Bitmask: 1=onGround, 2=hasDoubleJump, 4=isFlipping, 8=supersonic, 16=jump held */
   f: number;
   gn: [number, number, number];
   ft: number;
@@ -29,6 +32,7 @@ export interface CompactCarWire {
 }
 
 export interface CompactGameStateWire {
+  pu?: GameStateSnapshot['powerUps'];
   seq: number;
   t: number;
   ph: GameStateSnapshot['phase'];
@@ -76,6 +80,7 @@ export function packCompactSnapshot(
   }
 
   return {
+    pu: structuredClone(snapshot.powerUps),
     seq,
     t: snapshot.tick,
     ph: snapshot.phase,
@@ -100,8 +105,12 @@ export function packCompactSnapshot(
         (car.onGround ? 1 : 0) |
         (car.hasDoubleJump ? 2 : 0) |
         (car.isFlipping ? 4 : 0) |
-        (car.supersonic ? 8 : 0);
+        (car.supersonic ? 8 : 0) |
+        (car.prevJumpInput ? 16 : 0);
       return {
+        gm: r2(car.godModeTimer ?? 0),
+        it: car.inputTime === undefined ? undefined : Math.round(car.inputTime * 10000) / 10000,
+        aj: car.airTimeSinceJump,
         id: car.id,
         p: [r2(car.pos.x), r2(car.pos.y), r2(car.pos.z)],
         v: [r2(car.vel.x), r2(car.vel.y), r2(car.vel.z)],
@@ -132,6 +141,7 @@ export function unpackCompactSnapshot(
   const inactiveMap = new Map<number, number>(wire.ip);
 
   return {
+    powerUps: structuredClone(wire.pu ?? { elapsed: 0, spawnCount: 0, item: null }),
     tick: wire.t,
     mode: template.mode,
     arenaId: template.arenaId,
@@ -168,6 +178,8 @@ export function unpackCompactSnapshot(
       const q = normQuat({ x: wc.q[0], y: wc.q[1], z: wc.q[2], w: wc.q[3] });
       return {
         id: wc.id,
+        inputTime: wc.it,
+        godModeTimer: wc.gm ?? 0,
         name: base?.name ?? 'Pilota',
         team: base?.team ?? 'blue',
         isBot: base?.isBot ?? false,
@@ -180,8 +192,8 @@ export function unpackCompactSnapshot(
         onGround: (wc.f & 1) !== 0,
         groundNormal: { x: wc.gn[0], y: wc.gn[1], z: wc.gn[2] },
         hasDoubleJump: (wc.f & 2) !== 0,
-        prevJumpInput: base?.prevJumpInput ?? false,
-        airTimeSinceJump: base?.airTimeSinceJump ?? 0,
+        prevJumpInput: (wc.f & 16) !== 0,
+        airTimeSinceJump: wc.aj ?? 0,
         isFlipping: (wc.f & 4) !== 0,
         flipTimer: wc.ft,
         flipAxis: { x: wc.fa[0], y: wc.fa[1], z: wc.fa[2] },
@@ -239,6 +251,7 @@ export function reconcilePredictedSnapshot(
   predicted.lastGoalTeam = authoritative.lastGoalTeam;
   predicted.lastGoalSpeedKph = authoritative.lastGoalSpeedKph;
   predicted.winner = authoritative.winner;
+  predicted.powerUps = structuredClone(authoritative.powerUps);
   predicted.boostPads = authoritative.boostPads;
 
   if (authoritative.phase !== 'active') {
@@ -320,6 +333,7 @@ export function reconcilePredictedSnapshot(
     }
 
     pred.demolishedTimer = auth.demolishedTimer;
+    pred.godModeTimer = auth.godModeTimer ?? 0;
     pred.score = auth.score;
     pred.goals = auth.goals;
     pred.shots = auth.shots;

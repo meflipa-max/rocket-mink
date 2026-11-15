@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ARENA_HALF_Z,
+  ARENA_HALF_X,
+  ARENA_HEIGHT,
+  CEILING_RAMP_RADIUS,
   BALL_RADIUS,
   CAR_RIDE_HEIGHT,
   checkGoalScored,
@@ -11,16 +14,106 @@ import {
 import {
   MAX_BALL_SPEED,
   MAX_CAR_SPEED,
+  MAX_BOOST_SPEED,
   NEUTRAL_INPUT,
   SUPERSONIC_THRESHOLD,
   createMatchState,
   resetKickoff,
   skipGoalReplay,
   stepSimulation,
+  predictScoringTeam,
 } from './physics';
 import type { PlayerInput } from './types';
 import { dotV3, quatFromYaw, rotateVecByQuat, v3 } from './math3d';
 import { GOAL_REPLAY_DURATION, GOAL_CELEBRATION_DURATION } from './replay';
+
+test('ball top speed stays below turbo speed and strong impacts stay capped', () => {
+  assert.ok(MAX_BALL_SPEED < MAX_BOOST_SPEED);
+  const state = createMatchState('freeplay', 'dfh_night', []);
+  state.ball.pos = v3(0, 5, 0);
+  state.ball.vel = v3(0, 0, 150);
+  stepSimulation(state, {}, 1 / 60);
+  assert.ok(Math.hypot(state.ball.vel.x, state.ball.vel.y, state.ball.vel.z) <= MAX_BALL_SPEED + 1e-8);
+});
+
+test('boost carries a car from the pitch up the wall and onto the flat ceiling', () => {
+  for (const dt of [1 / 30, 1 / 60, 1 / 120]) {
+    const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'CeilingDriver', team: 'blue' }]);
+    const car = state.cars[0];
+    car.pos = v3(35, CAR_RIDE_HEIGHT, 0);
+    car.quat = quatFromYaw(Math.PI / 2);
+    car.boost = 100;
+    let reachedCeiling = false;
+    for (let i = 0; i < 5 / dt; i++) {
+      stepSimulation(state, { p1: { ...NEUTRAL_INPUT, throttle: 1, boost: true } }, dt);
+      if (car.onGround && car.groundNormal.y < -0.95 && car.pos.x < ARENA_HALF_X - CEILING_RAMP_RADIUS - 2) {
+        reachedCeiling = true;
+        assert.ok(car.pos.y > ARENA_HEIGHT - 1);
+        const jump = stepSimulation(state, { p1: { ...NEUTRAL_INPUT, jump: true } }, dt);
+        assert.ok(jump.some((event) => event.type === 'jump'));
+        assert.equal(car.onGround, false, 'Jump must detach from the ceiling');
+        break;
+      }
+    }
+    assert.ok(reachedCeiling, `Ceiling not reached at ${1 / dt}Hz: ${JSON.stringify({ pos: car.pos, normal: car.groundNormal, grounded: car.onGround })}`);
+  }
+});
+
+test('shot prediction follows fast ground bounces, slow rollers and aerial trajectories while rejecting misses', () => {
+  const state = createMatchState('freeplay', 'dfh_night', []);
+  for (const speed of [8, 20, 42]) {
+    state.ball.pos = v3(0, BALL_RADIUS, ARENA_HALF_Z - (speed === 8 ? 12 : 25));
+    state.ball.vel = v3(0, 0, speed);
+    assert.equal(predictScoringTeam(state.ball), 'blue', `Rolling shot at ${speed}m/s`);
+  }
+  state.ball.pos = v3(0, 12, ARENA_HALF_Z - 18);
+  state.ball.vel = v3(0, -7, 20);
+  assert.equal(predictScoringTeam(state.ball), 'blue');
+  state.ball.pos = v3(24, BALL_RADIUS, ARENA_HALF_Z - 15);
+  state.ball.vel = v3(0, 0, 25);
+  assert.equal(predictScoringTeam(state.ball), null);
+  state.ball.pos = v3(0, 18, ARENA_HALF_Z - 6);
+  state.ball.vel = v3(0, 0, 30);
+  assert.equal(predictScoringTeam(state.ball), null, 'Shot over the crossbar is not on target');
+});
+
+test('lateral saves count for both teams even when the ball keeps travelling toward the goal line', () => {
+  for (const team of ['blue', 'orange'] as const) {
+    for (const x of [0, 24]) {
+      const direction = team === 'blue' ? -1 : 1;
+      const state = createMatchState('1v1', 'dfh_night', [{ id: 'keeper', name: 'Keeper', team }]);
+      state.phase = 'active';
+      const car = state.cars[0];
+      car.pos = v3(x - 3, CAR_RIDE_HEIGHT, direction * 60);
+      car.quat = quatFromYaw(Math.PI / 2);
+      car.vel = v3(25, 0, 0);
+      state.ball.pos = v3(x, BALL_RADIUS, direction * 60);
+      state.ball.vel = v3(0, 0, direction * 30);
+      const events = stepSimulation(state, {}, 1 / 60);
+      assert.ok(events.some((event) => event.type === 'ball_hit'));
+      assert.equal(Math.sign(state.ball.vel.z), direction);
+      assert.equal(events.some((event) => event.type === 'save'), x === 0, 'Wide balls are not saves');
+      assert.equal(car.saves, x === 0 ? 1 : 0);
+    }
+  }
+});
+
+test('shots are awarded at the initial touch for fast midfield drives and slow finishes before any goal', () => {
+  for (const speed of [10, 31]) {
+    const state = createMatchState('1v1', 'dfh_night', [{ id: 'striker', name: 'Striker', team: 'blue' }]);
+    state.phase = 'active';
+    const car = state.cars[0];
+    car.pos = v3(0, CAR_RIDE_HEIGHT, speed === 10 ? 72 : 30);
+    car.quat = quatFromYaw(0);
+    car.vel = v3(0, 0, speed);
+    state.ball.pos = v3(0, BALL_RADIUS, car.pos.z + 3.2);
+    const events = stepSimulation(state, {}, 1 / 60);
+    assert.ok(events.some((event) => event.type === 'shot'), `Missing shot at ${speed}m/s`);
+    assert.equal(car.shots, 1);
+    assert.equal(events.some((event) => event.type === 'goal'), false);
+    assert.equal(state.scoreBlue, 0);
+  }
+});
 
 test('arena has 34 boost pads (6 big, 28 small) and resolves floor & curved ramp', () => {
   const pads = createBoostPads();

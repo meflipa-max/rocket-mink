@@ -2,7 +2,6 @@ import {
   ARENA_HALF_X,
   ARENA_HALF_Z,
   BALL_RADIUS,
-  CAR_HALF_EXTENTS,
   CAR_RIDE_HEIGHT,
   GOAL_HALF_X,
   GOAL_HEIGHT,
@@ -12,12 +11,14 @@ import {
   resolveArenaSphere,
 } from './arena';
 import { GOAL_CELEBRATION_DURATION, GOAL_REPLAY_DURATION } from './replay';
+import { resolveBallContact } from './ballContact';
+import { carTouchesBoostPad } from './boostPickup';
+import { GOD_MODE_SPEED, stepPowerUps } from './powerUps';
 import {
   addV3,
   clamp,
   crossV3,
   dotV3,
-  lenSqV3,
   lenV3,
   lerp,
   mulQuat,
@@ -26,7 +27,6 @@ import {
   quatFromAxisAngle,
   quatFromUnitVectors,
   quatFromYaw,
-  rotateVecByInvQuat,
   rotateVecByQuat,
   scaleV3,
   slerpQuat,
@@ -35,6 +35,7 @@ import {
 } from './math3d';
 import type {
   ArenaId,
+  BallState,
   CarCustomization,
   CarState,
   GameStateSnapshot,
@@ -49,10 +50,12 @@ export const GRAVITY = -15.2; // Rocket League-style floaty aerial gravity
 export const MAX_CAR_SPEED = 21.0; // Normal max throttle speed (m/s, ~75 km/h)
 export const SUPERSONIC_THRESHOLD = 26.5; // Supersonic speed threshold (m/s, ~95 km/h)
 export const MAX_BOOST_SPEED = 31.0; // Max boost speed (m/s, ~112 km/h)
-export const MAX_BALL_SPEED = 42.0; // Controlled max ball speed (m/s, ~151 km/h)
+export const MAX_BALL_SPEED = 29.0; // ~104 km/h, below the 112 km/h turbo car speed
 export const MATCH_DURATION_SECONDS = 300; // 5:00 standard match
 
 export type SimulationEvent =
+  | { type: 'god_mode_spawn'; pos: Vec3 }
+  | { type: 'god_mode_pickup'; carId: string; playerName: string; team: Team; pos: Vec3 }
   | { type: 'ball_hit'; speed: number; pos: Vec3; playerId: string | null }
   | { type: 'wall_hit'; speed: number; pos: Vec3 }
   | { type: 'jump'; carId: string; pos: Vec3 }
@@ -108,6 +111,7 @@ export function createCar(seed: PlayerSeed, slotIndex: number): CarState {
     flipAxis: v3(),
     supersonic: false,
     demolishedTimer: 0,
+    godModeTimer: 0,
     prevJumpInput: false,
     wheelSpin: 0,
     steerAngle: 0,
@@ -133,6 +137,7 @@ export function createMatchState(
   });
 
   return {
+    powerUps: { elapsed: 0, spawnCount: 0, item: null },
     tick: 0,
     phase: mode === 'freeplay' ? 'active' : 'countdown',
     phaseTimer: mode === 'freeplay' ? 0 : 3.0,
@@ -180,6 +185,7 @@ export function resetKickoff(state: GameStateSnapshot): void {
     car.flipTimer = 0;
     car.supersonic = false;
     car.demolishedTimer = 0;
+    car.godModeTimer = 0;
     car.prevJumpInput = false;
   }
 
@@ -283,6 +289,8 @@ export function stepSimulation(
     }
   }
 
+  if (authoritative) stepPowerUps(state, stepDt, events);
+
   // Update boost pad respawn timers
   for (const pad of state.boostPads) {
     if (!pad.active) {
@@ -298,13 +306,13 @@ export function stepSimulation(
   stepCarsOnly(state, inputs, stepDt, events);
 
   // Car-to-Car collisions & demolitions
-  resolveCarCollisions(state, events);
+  resolveCarCollisions(state, events, authoritative);
 
   // Step ball physics
   stepBall(state, stepDt, events);
 
   // Car-to-Ball collisions
-  resolveCarBallCollisions(state, events);
+  resolveCarBallCollisions(state, events, authoritative);
 
   // Check goals (host-authoritative so guest extrapolation never flashes phantom goals)
   const scoringTeam = authoritative ? checkGoalScored(state.ball.pos, state.ball.radius) : null;
@@ -373,6 +381,29 @@ export function stepSimulation(
   return events;
 }
 
+/** Replays only one car against the arena; never advances the ball, bots or match events. */
+export function replayCarInput(state: GameStateSnapshot, carId: string, input: PlayerInput, dt: number): void {
+  const car = state.cars.find((c) => c.id === carId);
+  if (!car || dt <= 0) return;
+  stepCarsOnly({ ...state, cars: [car] }, { [carId]: input }, dt, []);
+}
+
+/** Guests predict their own car and nearby ball contacts, never bots or the whole match. */
+export function stepClientPrediction(state: GameStateSnapshot, carId: string, input: PlayerInput, dt: number, extrapolateWorld: boolean): SimulationEvent[] {
+  const events: SimulationEvent[] = [];
+  const car = state.cars.find((candidate) => candidate.id === carId);
+  if (!car) return events;
+  stepCarsOnly({ ...state, cars: [car] }, { [carId]: input }, dt, events);
+  if (extrapolateWorld) {
+    for (const remote of state.cars) {
+      if (remote.id !== carId && remote.demolishedTimer <= 0) remote.pos = addV3(remote.pos, scaleV3(remote.vel, dt));
+    }
+    stepBall(state, dt, events);
+    resolveCarBallCollisions({ ...state, cars: [car] }, events, false);
+  }
+  return events;
+}
+
 function stepCarsOnly(
   state: GameStateSnapshot,
   inputs: Record<string, PlayerInput>,
@@ -380,6 +411,7 @@ function stepCarsOnly(
   events: SimulationEvent[],
 ): void {
   for (const car of state.cars) {
+    car.godModeTimer = Math.max(0, (car.godModeTimer ?? 0) - dt);
     // Handle demolished respawn
     if (car.demolishedTimer > 0) {
       car.demolishedTimer -= dt;
@@ -399,6 +431,7 @@ function stepCarsOnly(
       continue;
     }
 
+    const previousPosition = { ...car.pos };
     car.angVel = v3();
     const input = car.isBot
       ? computeBotInput(car, state)
@@ -414,6 +447,10 @@ function stepCarsOnly(
 
     const forwardSpeed = dotV3(car.vel, forward);
     const lateralSpeed = dotV3(car.vel, left);
+    const godMode = car.godModeTimer > 0;
+    if (godMode && (input.throttle !== 0 || input.boost)) {
+      car.vel = addV3(car.vel, scaleV3(forward, (input.throttle < 0 ? -1 : 1) * 32 * dt));
+    }
 
     // Boosting (works on ground and in air!)
     const isBoosting = input.boost && car.boost > 0.2;
@@ -438,7 +475,7 @@ function stepCarsOnly(
         // Braking when moving opposite to throttle is snappier
         const braking = Math.sign(throttle) !== Math.sign(forwardSpeed) && Math.abs(forwardSpeed) > 1.5;
         const accel = braking ? 48.0 : throttle > 0 ? 26.0 : 20.0;
-        if (Math.abs(forwardSpeed) < MAX_CAR_SPEED || braking || isBoosting) {
+        if (Math.abs(forwardSpeed) < (godMode ? GOD_MODE_SPEED : MAX_CAR_SPEED) || braking || isBoosting) {
           car.vel = addV3(car.vel, scaleV3(forward, throttle * accel * dt));
         }
       } else {
@@ -635,8 +672,9 @@ function stepCarsOnly(
 
     // Clamp max total velocity & update supersonic flag
     const speed = lenV3(car.vel);
-    if (speed > MAX_BOOST_SPEED) {
-      car.vel = scaleV3(car.vel, MAX_BOOST_SPEED / speed);
+    const maxSpeed = godMode ? GOD_MODE_SPEED : MAX_BOOST_SPEED;
+    if (speed > maxSpeed) {
+      car.vel = scaleV3(car.vel, maxSpeed / speed);
     }
     // Enter at full speed, with a small exit margin to avoid flickering and
     // repeating the sonic boom when throttle or network corrections vary slightly.
@@ -700,11 +738,7 @@ function stepCarsOnly(
     // Boost Pad Pickups
     for (const pad of state.boostPads) {
       if (!pad.active) continue;
-      const pickupRadius = pad.isBig ? 2.4 : 1.7;
-      const dx = car.pos.x - pad.pos.x;
-      const dy = car.pos.y - pad.pos.y;
-      const dz = car.pos.z - pad.pos.z;
-      if (dx * dx + dy * dy + dz * dz < pickupRadius * pickupRadius && car.boost < 99.9) {
+      if (car.boost < 99.9 && carTouchesBoostPad(car, pad, previousPosition)) {
         car.boost = Math.min(100, car.boost + (pad.isBig ? 100 : 12));
         pad.active = false;
         pad.respawnTimer = pad.isBig ? 10.0 : 4.0;
@@ -719,7 +753,10 @@ function stepBall(
   dt: number,
   events: SimulationEvent[],
 ): void {
-  const ball = state.ball;
+  stepBallPhysics(state.ball, dt, events);
+}
+
+function stepBallPhysics(ball: BallState, dt: number, events: SimulationEvent[]): void {
 
   // Gravity, air drag & natural deceleration
   ball.vel.y += GRAVITY * 0.92 * dt;
@@ -771,88 +808,52 @@ function stepBall(
   }
 }
 
+/** Uses actual ball drag, gravity and floor bounces, rather than a straight ballistic arc. */
+export function predictScoringTeam(ball: BallState): Team | null {
+  if (Math.abs(ball.vel.z) < 1) return null;
+  const direction = Math.sign(ball.vel.z);
+  const goalZ = direction * (ARENA_HALF_Z + ball.radius * 0.45);
+  const travelTime = (goalZ - ball.pos.z) / ball.vel.z;
+  if (travelTime < 0 || travelTime > 5) return null;
+  const projectedX = ball.pos.x + ball.vel.x * travelTime;
+  // Floor bounces do not change the X/Z heading. Side-wall bank shots are a new action.
+  if (Math.abs(projectedX) > GOAL_HALF_X + ball.radius) return null;
+  const future: BallState = { ...ball, pos: { ...ball.pos }, vel: { ...ball.vel }, angVel: { ...ball.angVel } };
+  const ignored: SimulationEvent[] = [];
+  for (let tick = 0; tick < 300; tick++) {
+    const goal = checkGoalScored(future.pos, future.radius);
+    if (goal) return goal;
+    if (Math.sign(future.vel.z) !== direction || Math.abs(future.vel.z) < 1) return null;
+    stepBallPhysics(future, 1 / 60, ignored);
+    ignored.length = 0;
+  }
+  return null;
+}
+
 function resolveCarBallCollisions(
   state: GameStateSnapshot,
   events: SimulationEvent[],
+  authoritative = true,
 ): void {
   const ball = state.ball;
 
   for (const car of state.cars) {
     if (car.demolishedTimer > 0) continue;
 
-    // Transform ball center into car's local OBB space
-    const rel = subV3(ball.pos, car.pos);
-    const localBall = rotateVecByInvQuat(rel, car.quat);
-
-    // Closest point on car chassis OBB
-    const closestLocal: Vec3 = {
-      x: clamp(localBall.x, -CAR_HALF_EXTENTS.x, CAR_HALF_EXTENTS.x),
-      y: clamp(localBall.y, -CAR_HALF_EXTENTS.y, CAR_HALF_EXTENTS.y),
-      z: clamp(localBall.z, -CAR_HALF_EXTENTS.z, CAR_HALF_EXTENTS.z),
-    };
-
-    const diffLocal = subV3(localBall, closestLocal);
-    const distSq = lenSqV3(diffLocal);
-    if (distSq >= ball.radius * ball.radius) continue;
-
-    const dist = Math.sqrt(distSq);
-    const localNormal =
-      dist > 1e-5
-        ? scaleV3(diffLocal, 1 / dist)
-        : normV3(localBall, v3(0, 1, 0));
-    const worldNormal = normV3(rotateVecByQuat(localNormal, car.quat));
-    const penetration = ball.radius - dist;
-
-    // Separate ball out of car
-    ball.pos = addV3(ball.pos, scaleV3(worldNormal, penetration + 0.02));
-
-    // Relative velocity along contact normal
-    // A flipping bumper has contact velocity of its own. This makes backflip
-    // clears and nose/tail flicks follow the actual direction of rotation.
-    const rotationVelocity = crossV3(car.angVel, subV3(ball.pos, car.pos));
-    const rotationSpeed = lenV3(rotationVelocity);
-    const contactVelocity = addV3(car.vel, scaleV3(rotationVelocity, Math.min(1, 8 / Math.max(rotationSpeed, 0.001))));
-    const relVel = subV3(ball.vel, contactVelocity);
-    const vn = dotV3(relVel, worldNormal);
-
-    if (vn < 0) {
-      const carSpeed = lenV3(car.vel);
-      const powerBoost = car.isFlipping ? 1.24 : 0.92;
-      const restitution = 0.50;
-      const impulseMag = -(1 + restitution) * vn * powerBoost;
-
-      ball.vel = addV3(ball.vel, scaleV3(worldNormal, impulseMag));
-      // Add controlled forward car momentum + natural upward pop
-      ball.vel = addV3(ball.vel, scaleV3(car.vel, 0.18));
-      if (worldNormal.y > -0.2 && carSpeed > 6) {
-        ball.vel.y += clamp(carSpeed * 0.11, 1.1, 3.8);
-      }
-
-      const postHitSpeed = lenV3(ball.vel);
-      if (postHitSpeed > MAX_BALL_SPEED) {
-        ball.vel = scaleV3(ball.vel, MAX_BALL_SPEED / postHitSpeed);
-      }
-
-      // Spin impulse from tangential hit
-      const contactTangent = subV3(relVel, scaleV3(worldNormal, vn));
-      ball.angVel = addV3(ball.angVel, scaleV3(crossV3(worldNormal, contactTangent), 0.2));
-
-      // Mild recoil on car
-      car.vel = subV3(car.vel, scaleV3(worldNormal, impulseMag * 0.12));
-
+    const incomingBall: BallState = { ...ball, pos: { ...ball.pos }, vel: { ...ball.vel }, angVel: { ...ball.angVel } };
+    if (resolveBallContact(car, ball, MAX_BALL_SPEED)) {
       const hitSpeed = lenV3(ball.vel);
+      const previousTouchId = ball.lastTouchPlayerId;
       ball.lastTouchTeam = car.team;
       ball.lastTouchPlayerId = car.id;
       ball.lastTouchName = car.name;
       ball.lastHitSpeed = hitSpeed;
       car.score += 2;
 
-      // Detect Save (clearing ball away from own goal when ball was fast toward goal)
-      const ownGoalZ = car.team === 'blue' ? -ARENA_HALF_Z : ARENA_HALF_Z;
-      const nearOwnGoal =
-        Math.abs(ball.pos.z - ownGoalZ) < 16 && Math.abs(ball.pos.x) < GOAL_HALF_X + 5;
-      const wasThreateningGoal = Math.sign(relVel.z + contactVelocity.z) === Math.sign(ownGoalZ) && Math.abs(relVel.z + contactVelocity.z) > 6;
-      if (nearOwnGoal && wasThreateningGoal && Math.sign(ball.vel.z) !== Math.sign(ownGoalZ)) {
+      const incomingGoal = authoritative ? predictScoringTeam(incomingBall) : null;
+      const outgoingGoal = authoritative ? predictScoringTeam(ball) : null;
+      // A lateral or upward deflection can save a shot without reversing its Z velocity.
+      if (incomingGoal && incomingGoal !== car.team && outgoingGoal !== incomingGoal) {
         car.saves += 1;
         car.score += 50;
         events.push({
@@ -863,13 +864,9 @@ function resolveCarBallCollisions(
         });
       }
 
-      // Detect Shot on target
-      const targetGoalZ = car.team === 'blue' ? ARENA_HALF_Z : -ARENA_HALF_Z;
-      const towardTarget = Math.sign(ball.vel.z) === Math.sign(targetGoalZ);
-      const goalTravelTime = (targetGoalZ - ball.pos.z) / ball.vel.z;
-      const projectedX = ball.pos.x + ball.vel.x * goalTravelTime;
-      const projectedY = ball.pos.y + ball.vel.y * goalTravelTime + 0.5 * GRAVITY * 0.92 * goalTravelTime * goalTravelTime;
-      if (towardTarget && hitSpeed > 18 && goalTravelTime > 0 && goalTravelTime < 3 && Math.abs(projectedX) < GOAL_HALF_X && projectedY < GOAL_HEIGHT && projectedY > -BALL_RADIUS) {
+      // Count the shot at contact, including rolling/bouncing shots, with no speed cutoff.
+      // Continuous dribbling contacts on the same threat do not create duplicate shots.
+      if (outgoingGoal === car.team && (incomingGoal !== outgoingGoal || previousTouchId !== car.id)) {
         car.shots += 1;
         car.score += 10;
         events.push({ type: 'shot', playerId: car.id, playerName: car.name, team: car.team, aerial: car.pos.y > 4 });
@@ -888,6 +885,7 @@ function resolveCarBallCollisions(
 function resolveCarCollisions(
   state: GameStateSnapshot,
   events: SimulationEvent[],
+  authoritative = true,
 ): void {
   const cars = state.cars;
   const minDist = 2.35;
@@ -908,14 +906,28 @@ function resolveCarCollisions(
 
       // Only a committed, nose-first supersonic impact can demolish. Side swipes,
       // reversing, glancing touches and cars travelling together remain bumps.
-      if (a.team !== b.team) {
+      if (a.team !== b.team && authoritative) {
+        if (a.godModeTimer > 0 && b.godModeTimer <= 0) {
+          b.demolishedTimer = 3;
+          a.demos++;
+          a.score += 25;
+          events.push({ type: 'demo', attackerId: a.id, victimId: b.id, pos: { ...b.pos } });
+          continue;
+        }
+        if (b.godModeTimer > 0 && a.godModeTimer <= 0) {
+          a.demolishedTimer = 3;
+          b.demos++;
+          b.score += 25;
+          events.push({ type: 'demo', attackerId: b.id, victimId: a.id, pos: { ...a.pos } });
+          break;
+        }
         const aIntoB = dotV3(a.vel, n);
         const bIntoA = -dotV3(b.vel, n);
         const closingSpeed = aIntoB + bIntoA;
         const aForward = rotateVecByQuat(v3(0, 0, 1), a.quat);
         const bForward = rotateVecByQuat(v3(0, 0, 1), b.quat);
-        const aDemolishes = a.supersonic && aIntoB >= SUPERSONIC_THRESHOLD * 0.94 && dotV3(aForward, n) > 0.85 && closingSpeed > 18;
-        const bDemolishes = b.supersonic && bIntoA >= SUPERSONIC_THRESHOLD * 0.94 && -dotV3(bForward, n) > 0.85 && closingSpeed > 18;
+        const aDemolishes = b.godModeTimer <= 0 && a.supersonic && aIntoB >= SUPERSONIC_THRESHOLD * 0.94 && dotV3(aForward, n) > 0.85 && closingSpeed > 18;
+        const bDemolishes = a.godModeTimer <= 0 && b.supersonic && bIntoA >= SUPERSONIC_THRESHOLD * 0.94 && -dotV3(bForward, n) > 0.85 && closingSpeed > 18;
         if (aDemolishes) {
           b.demolishedTimer = 3.0;
           a.demos += 1;

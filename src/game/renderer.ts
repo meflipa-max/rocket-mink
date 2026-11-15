@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { ARENA_HALF_X, ARENA_HALF_Z, ARENA_HEIGHT, CAR_RIDE_HEIGHT, GOAL_HEIGHT } from '../shared/arena';
 import { clamp, lerp } from '../shared/math3d';
-import { reconcilePredictedSnapshot } from '../shared/netSnapshot';
+import { ClientPrediction } from '../shared/clientPrediction';
+import { buildFollowCamera, constrainCamera, smoothCameraUp } from '../shared/cameraRig';
 import { NEUTRAL_INPUT, skipGoalReplay, stepSimulation, type SimulationEvent } from '../shared/physics';
 import {
   GOAL_REPLAY_DURATION,
@@ -24,10 +25,13 @@ import { buildCarVisualRig, type CarVisualRig } from './carMesh';
 import { ParticlePool } from './particles';
 import { soundEngine } from './sound';
 import { buildSoccerBallMesh, buildStadium, type StadiumRig } from './stadium';
+import { animateGodModeCar, createGodModeItemVisual } from './godModeVisual';
 
 export type ViewportMode = 'title' | 'garage' | 'playing' | 'paused' | 'gameover';
 
 export interface HudTelemetry {
+  godModeSeconds: number;
+  godModeItemMarker?: { x: number; y: number; distance: number; offscreen: boolean; angle: number } | null;
   boost: number;
   speedKph: number;
   supersonic: boolean;
@@ -97,6 +101,7 @@ export class GameViewportController {
   private stadium: StadiumRig;
   private ballRig: ReturnType<typeof buildSoccerBallMesh>;
   private particles: ParticlePool;
+  private godModeItem = createGodModeItemVisual();
   private carRigs = new Map<string, CarVisualRig>();
   private garageRig: CarVisualRig | null = null;
   private garageCustomization: CarCustomization = { ...DEFAULT_CUSTOMIZATION_BLUE };
@@ -109,6 +114,7 @@ export class GameViewportController {
   private mode: ViewportMode = 'title';
   private localPlayerId = 'local-player';
   private isMultiplayer = false;
+  private isLocalHost = false;
   private ballCam = true;
   private paused = false;
 
@@ -122,6 +128,8 @@ export class GameViewportController {
 
   private keys = new Set<string>();
   private mouseBoost = false;
+  private mouseJump = false;
+  private prediction = new ClientPrediction();
   private prevInput: PlayerInput = { ...NEUTRAL_INPUT };
   private cameraPos = new THREE.Vector3(0, 16, -42);
   private cameraLook = new THREE.Vector3(0, 2, 0);
@@ -134,7 +142,7 @@ export class GameViewportController {
   // Callbacks
   public onHudUpdate?: (hud: HudTelemetry) => void;
   public onEvents?: (events: SimulationEvent[]) => void;
-  public onSendInput?: (input: PlayerInput) => void;
+  public onSendInput?: (input: PlayerInput, time: number) => void;
   public onBallCamChange?: (enabled: boolean) => void;
   public onNameplates?: (plates: NameplateProjection[]) => void;
   public onGoalMarkers?: (markers: GoalMarkerProjection[]) => void;
@@ -194,6 +202,7 @@ export class GameViewportController {
 
     this.particles = new ParticlePool();
     this.scene.add(this.particles.mesh);
+    this.scene.add(this.godModeItem.group);
 
     // Build Title Showcase Idle Cars
     this.spawnTitleShowcaseCars();
@@ -270,6 +279,7 @@ export class GameViewportController {
     this.paused = mode === 'paused';
 
     if (mode === 'title') {
+      this.camera.up.set(0, 1, 0);
       this.activeState = null;
       this.targetNetState = null;
       if (this.garageRig) {
@@ -281,6 +291,7 @@ export class GameViewportController {
       this.spawnTitleShowcaseCars();
       soundEngine.updateContinuous(false, 0, false);
     } else if (mode === 'garage') {
+      this.camera.up.set(0, 1, 0);
       this.clearCarRigs();
       this.ballRig.group.visible = false;
       this.ballRig.indicatorRing.visible = false;
@@ -307,6 +318,8 @@ export class GameViewportController {
     const speed = Math.hypot(localCar.vel.x, localCar.vel.y, localCar.vel.z);
     const onWall = localCar.onGround && localCar.groundNormal.y < 0.7;
     this.onHudUpdate?.({
+      godModeSeconds: localCar.godModeTimer ?? 0,
+      godModeItemMarker: this.getGodModeItemMarker(),
       boost: Math.round(localCar.boost),
       speedKph: Math.round(speed * 3.6),
       supersonic: localCar.supersonic,
@@ -343,7 +356,11 @@ export class GameViewportController {
     this.emitHudNow();
   }
 
-  public startMultiplayerMatch(snapshot: GameStateSnapshot, localId: string): void {
+  public startMultiplayerMatch(snapshot: GameStateSnapshot, localId: string, isHost = false): void {
+    this.isLocalHost = isHost;
+    this.prediction.reset();
+    this.inputSendAccum = 1;
+    this.prevInput = { ...NEUTRAL_INPUT };
     this.isMultiplayer = true;
     this.localPlayerId = localId;
     this.lastNetPacketMs = performance.now();
@@ -377,6 +394,10 @@ export class GameViewportController {
   public applyNetworkSnapshot(snapshot: GameStateSnapshot): void {
     this.lastNetPacketMs = performance.now();
     this.targetNetState = snapshot;
+    if (this.isLocalHost) {
+      this.activeState = snapshot;
+      return;
+    }
     if (!this.activeState) {
       this.activeState = structuredClone(snapshot);
       this.syncCarRigsFromState(this.activeState);
@@ -388,10 +409,10 @@ export class GameViewportController {
       this.activeState.cars.length !== snapshot.cars.length ||
       this.activeState.cars.some((car, idx) => car.id !== snapshot.cars[idx]?.id);
     if (rosterChanged) {
-      this.activeState = structuredClone(snapshot);
+      this.activeState = this.prediction.reconcile(this.activeState, snapshot, this.localPlayerId);
       this.syncCarRigsFromState(this.activeState);
     } else {
-      reconcilePredictedSnapshot(this.activeState, snapshot, this.localPlayerId);
+      this.activeState = this.prediction.reconcile(this.activeState, snapshot, this.localPlayerId);
     }
   }
 
@@ -401,7 +422,13 @@ export class GameViewportController {
 
   public handleSimulationEvents(events: SimulationEvent[], fromLocalPred = false): void {
     for (const ev of events) {
-      if (ev.type === 'ball_hit') {
+      if (ev.type === 'god_mode_spawn') {
+        soundEngine.playGodModeAvailable();
+        this.particles.spawnBurst(ev.pos.x, ev.pos.y + 1, ev.pos.z, 32, 12, '#ffee55', 1.7, 1.2);
+      } else if (ev.type === 'god_mode_pickup') {
+        soundEngine.playBoostPickup(true);
+        for (const color of ['#ff44cc', '#44ffff', '#ffee44']) this.particles.spawnBurst(ev.pos.x, ev.pos.y + 1, ev.pos.z, 10, 9, color, 1.1, 0.9);
+      } else if (ev.type === 'ball_hit') {
         const dx = ev.pos.x - this.camera.position.x;
         const dz = ev.pos.z - this.camera.position.z;
         const distance = Math.hypot(dx, dz);
@@ -412,11 +439,11 @@ export class GameViewportController {
       } else if (ev.type === 'wall_hit') {
         soundEngine.playBallHit(ev.speed * 0.7, 0, 1 / (1 + Math.hypot(ev.pos.x - this.camera.position.x, ev.pos.z - this.camera.position.z) / 55), true);
       } else if (ev.type === 'jump' && ev.carId === this.localPlayerId) {
-        if (this.isMultiplayer && !fromLocalPred) continue;
+        if (this.isMultiplayer && !this.isLocalHost && !fromLocalPred) continue;
         soundEngine.playJump(false);
         this.particles.spawnBurst(ev.pos.x, ev.pos.y, ev.pos.z, 6, 6, '#e2e8f0', 0.65, 0.3);
       } else if (ev.type === 'flip' && ev.carId === this.localPlayerId) {
-        if (this.isMultiplayer && !fromLocalPred) continue;
+        if (this.isMultiplayer && !this.isLocalHost && !fromLocalPred) continue;
         soundEngine.playJump(true);
         this.particles.spawnBurst(ev.pos.x, ev.pos.y, ev.pos.z, 10, 9, '#38bdf8', 0.75, 0.35);
       } else if (ev.type === 'boost_pickup' && ev.carId === this.localPlayerId) {
@@ -474,10 +501,10 @@ export class GameViewportController {
     if (!this.activeState) return;
     const car = this.activeState.cars.find((c) => c.id === this.localPlayerId) || this.activeState.cars[0];
     if (!car) return;
-    _q1.set(car.quat.x, car.quat.y, car.quat.z, car.quat.w);
-    _v1.set(0, 0, 1).applyQuaternion(_q1).normalize();
-    this.cameraPos.set(car.pos.x - _v1.x * 11.5, car.pos.y + 4.2, car.pos.z - _v1.z * 11.5);
-    this.cameraLook.set(car.pos.x + _v1.x * 6, car.pos.y + 1.5, car.pos.z + _v1.z * 6);
+    const view = buildFollowCamera(car, this.activeState.ball.pos, this.ballCam);
+    this.cameraPos.set(view.position.x, view.position.y, view.position.z);
+    this.cameraLook.set(view.lookAt.x, view.lookAt.y, view.lookAt.z);
+    this.camera.up.set(view.up.x, view.up.y, view.up.z);
   }
 
   private readCurrentInput(): PlayerInput {
@@ -494,8 +521,8 @@ export class GameViewportController {
       this.keys.has('KeyJ') ||
       this.mouseBoost;
     const handbrake =
-      this.keys.has('KeyK') || this.keys.has('KeyX') || this.keys.has('ControlLeft');
-    const jump = this.keys.has('Space');
+      this.keys.has('KeyK') || this.keys.has('KeyX') || this.keys.has('ControlLeft') || this.keys.has('ControlRight');
+    const jump = this.keys.has('Space') || this.mouseJump;
     const rollLeft = this.keys.has('KeyQ');
     const rollRight = this.keys.has('KeyE');
 
@@ -544,7 +571,8 @@ export class GameViewportController {
       e.code === 'ArrowUp' ||
       e.code === 'ArrowDown' ||
       e.code === 'ArrowLeft' ||
-      e.code === 'ArrowRight'
+      e.code === 'ArrowRight' ||
+      (this.mode === 'playing' && (e.ctrlKey || e.code === 'ControlLeft' || e.code === 'ControlRight'))
     ) {
       e.preventDefault();
     }
@@ -560,6 +588,11 @@ export class GameViewportController {
   private handleMouseDown = (e: MouseEvent) => {
     if (this.mode === 'garage' && e.button === 0 && e.target === this.renderer.domElement) this.garageDragX = e.clientX;
     if (this.mode !== 'playing') return;
+    if (e.target !== this.renderer.domElement) return;
+    if (e.button === 0) {
+      e.preventDefault();
+      this.mouseJump = true;
+    }
     if (e.button === 2) {
       this.mouseBoost = true;
     }
@@ -568,6 +601,7 @@ export class GameViewportController {
 
   private handleMouseUp = (e: MouseEvent) => {
     this.garageDragX = null;
+    if (e.button === 0) this.mouseJump = false;
     if (e.button === 2) this.mouseBoost = false;
   };
 
@@ -590,6 +624,7 @@ export class GameViewportController {
   private handleBlur = () => {
     this.keys.clear();
     this.mouseBoost = false;
+    this.mouseJump = false;
     this.garageDragX = null;
     soundEngine.updateContinuous(false, 0, false);
   };
@@ -663,6 +698,7 @@ export class GameViewportController {
 
   private update(dt: number): void {
     this.elapsed += dt;
+    this.godModeItem.update(this.activeState?.powerUps?.item, this.elapsed, (this.mode === 'playing' || this.mode === 'paused') && this.activeState?.phase === 'active');
     for (let i = this.boomSprites.length - 1; i >= 0; i--) {
       const boom = this.boomSprites[i];
       boom.age += dt;
@@ -723,7 +759,7 @@ export class GameViewportController {
 
     const input = this.mode === 'playing' ? this.readCurrentInput() : NEUTRAL_INPUT;
 
-    if (this.mode === 'playing' && !this.paused) {
+    if ((this.mode === 'playing' && !this.paused) || (this.isMultiplayer && this.mode === 'paused')) {
       if (this.isMultiplayer) {
         // Stream local inputs immediately on change, at 45Hz while active, and >=10Hz keepalive when idle
         this.inputSendAccum += dt;
@@ -733,11 +769,15 @@ export class GameViewportController {
           input.handbrake !== this.prevInput.handbrake ||
           input.throttle !== this.prevInput.throttle ||
           input.steer !== this.prevInput.steer ||
+          input.pitch !== this.prevInput.pitch ||
+          input.yaw !== this.prevInput.yaw ||
           input.roll !== this.prevInput.roll;
         const isNonNeutral =
           input.throttle !== 0 ||
           input.steer !== 0 ||
           input.roll !== 0 ||
+          input.pitch !== 0 ||
+          input.yaw !== 0 ||
           input.boost ||
           input.handbrake ||
           input.jump;
@@ -747,19 +787,14 @@ export class GameViewportController {
           this.inputSendAccum >= 1 / 10
         ) {
           this.inputSendAccum = 0;
-          this.onSendInput?.(input);
+          this.onSendInput?.(input, this.prediction.time);
         }
         this.prevInput = input;
 
         // 60fps local prediction only while host packets are fresh (<1.2s); freeze on stall so timelines never diverge
         const netFresh = performance.now() - this.lastNetPacketMs < 1200;
+        const predEvents = this.prediction.advance(this.activeState, this.localPlayerId, input, dt, netFresh && !this.isLocalHost);
         if (this.activeState.phase === 'active' && netFresh) {
-          const predEvents = stepSimulation(
-            this.activeState,
-            { [this.localPlayerId]: input },
-            dt,
-            false,
-          );
           // Trigger local jump/flip feedback immediately without waiting for host round-trip
           for (const ev of predEvents) {
             if ((ev.type === 'jump' || ev.type === 'flip') && ev.carId === this.localPlayerId) {
@@ -805,6 +840,7 @@ export class GameViewportController {
 
     // Instant Goal Replay Director Playback
     if (phase === 'goal_replay' && this.activeReplayClip) {
+      this.camera.up.set(0, 1, 0);
       const progress = clamp(1 - this.activeState.phaseTimer / GOAL_REPLAY_DURATION, 0, 1);
       const timeline = replayTimelineProgress(progress);
       const frame = sampleReplayFrame(this.activeReplayClip, timeline);
@@ -823,6 +859,7 @@ export class GameViewportController {
         for (const rCar of frame.cars) {
           const rig = this.carRigs.get(rCar.id);
           if (!rig) continue;
+          animateGodModeCar(rig, false, this.elapsed);
           rig.group.visible = !rCar.demolished;
           rig.contactShadow.visible = !rCar.demolished && (rCar.onGround || rCar.pos.y < 10);
           if (rCar.demolished) continue;
@@ -926,6 +963,8 @@ export class GameViewportController {
       const rig = this.carRigs.get(car.id);
       const disp = this.displayCars.get(car.id);
       if (!rig || !disp) continue;
+      const godMode = car.godModeTimer > 0 && this.activeState.phase === 'active';
+      animateGodModeCar(rig, godMode, this.elapsed);
 
       const hidden = car.demolishedTimer > 0;
       const carOnWall = car.onGround && car.groundNormal.y < 0.7;
@@ -941,6 +980,10 @@ export class GameViewportController {
 
       rig.group.position.copy(disp.pos);
       rig.group.quaternion.copy(disp.quat);
+      if (godMode && Math.random() < Math.min(1, dt * 45)) {
+        _v2.set((Math.random() - 0.5) * 2.6, 0.4, -2).applyQuaternion(disp.quat).add(disp.pos);
+        this.particles.spawn(_v2.x, _v2.y, _v2.z, -car.vel.x * 0.1, 1.6, -car.vel.z * 0.1, rig.primaryMat.emissive.getHex(), 0.8, 0.02, 0.6);
+      }
 
       // Surface-aligned contact shadow (projects onto walls/ramps when grounded so wall grip is unmistakable)
       if (car.onGround) {
@@ -987,10 +1030,10 @@ export class GameViewportController {
       }
 
       // Boost flame & particles
-      const isBoosting =
+      const isBoosting = godMode || (
         car.id === this.localPlayerId
           ? input.boost && car.boost > 0.2 && this.activeState.phase === 'active'
-          : car.supersonic || (car.boost < 99 && Math.hypot(car.vel.x, car.vel.z) > 26);
+          : car.supersonic || (car.boost < 99 && Math.hypot(car.vel.x, car.vel.z) > 26));
 
       for (const cone of rig.flameCones) {
         cone.visible = isBoosting;
@@ -1071,65 +1114,14 @@ export class GameViewportController {
       const carQuat = disp
         ? disp.quat
         : _q2.set(localCar.quat.x, localCar.quat.y, localCar.quat.z, localCar.quat.w);
-      const onWall = localCar.onGround && localCar.groundNormal.y < 0.7;
-      _v4.set(localCar.groundNormal.x, localCar.groundNormal.y, localCar.groundNormal.z).normalize();
-
-      if (this.ballCam) {
-        // Direction from ball to car (horizontal)
-        _v2.subVectors(carPos, this.displayBallPos);
-        _v2.y = 0;
-        if (_v2.lengthSq() < 0.2) _v2.set(0, 0, -1);
-        _v2.normalize();
-
-        // Desired camera offset behind car relative to ball line (pull inward when riding a wall)
-        _v3.copy(carPos).addScaledVector(_v2, 10.6);
-        if (onWall) {
-          _v3.addScaledVector(_v4, 4.8);
-          _v3.y = clamp(carPos.y + 2.6, 2.2, ARENA_HEIGHT - 2.0);
-        } else {
-          _v3.y = clamp(carPos.y + 3.85, 2.2, ARENA_HEIGHT - 2.0);
-        }
-        _v3.x = clamp(_v3.x, -ARENA_HALF_X + 1.5, ARENA_HALF_X - 1.5);
-        _v3.z = clamp(_v3.z, -ARENA_HALF_Z + 1.5, ARENA_HALF_Z - 1.5);
-
-        const camDamp = clamp(1 - Math.exp(-12 * dt), 0, 1);
-        this.cameraPos.lerp(_v3, camDamp);
-
-        // Look midway toward ball while keeping car clearly framed in lower third
-        _v2.copy(this.displayBallPos).lerp(carPos, 0.34);
-        _v2.y = Math.max(1.2, _v2.y + 0.65);
-        this.cameraLook.lerp(_v2, clamp(1 - Math.exp(-14 * dt), 0, 1));
-      } else {
-        // Car Cam: aligned behind car heading (with wall-normal pull inward on walls)
-        _v2.set(0, 0, 1).applyQuaternion(carQuat);
-        if (onWall) {
-          _v2.normalize();
-          _v3.copy(carPos).addScaledVector(_v2, -10.4).addScaledVector(_v4, 4.4);
-          _v3.y = clamp(_v3.y + 1.1, 2.0, ARENA_HEIGHT - 2.0);
-          _v3.x = clamp(_v3.x, -ARENA_HALF_X + 1.5, ARENA_HALF_X - 1.5);
-          _v3.z = clamp(_v3.z, -ARENA_HALF_Z + 1.5, ARENA_HALF_Z - 1.5);
-          this.cameraPos.lerp(_v3, clamp(1 - Math.exp(-11 * dt), 0, 1));
-
-          _v2.multiplyScalar(9).add(carPos).addScaledVector(_v4, 1.4);
-          this.cameraLook.lerp(_v2, clamp(1 - Math.exp(-14 * dt), 0, 1));
-        } else {
-          _v2.y = 0;
-          if (_v2.lengthSq() < 0.05) _v2.set(0, 0, 1);
-          _v2.normalize();
-
-          _v3.copy(carPos).addScaledVector(_v2, -10.8);
-          _v3.y = clamp(carPos.y + 3.6, 2.0, ARENA_HEIGHT - 2.0);
-          _v3.x = clamp(_v3.x, -ARENA_HALF_X + 1.5, ARENA_HALF_X - 1.5);
-          _v3.z = clamp(_v3.z, -ARENA_HALF_Z + 1.5, ARENA_HALF_Z - 1.5);
-
-          this.cameraPos.lerp(_v3, clamp(1 - Math.exp(-11 * dt), 0, 1));
-
-          _v2.multiplyScalar(9).add(carPos);
-          _v2.y += 1.4;
-          this.cameraLook.lerp(_v2, clamp(1 - Math.exp(-14 * dt), 0, 1));
-        }
-      }
-
+      const view = buildFollowCamera({ ...localCar, pos: carPos, quat: carQuat }, this.displayBallPos, this.ballCam);
+      this.cameraPos.lerp(_v3.set(view.position.x, view.position.y, view.position.z), 1 - Math.exp(-12 * dt));
+      // Recheck the smoothed path: lerping between safe points can cut through a goal post.
+      const safe = constrainCamera(view.pivot, this.cameraPos);
+      this.cameraPos.set(safe.x, safe.y, safe.z);
+      this.cameraLook.lerp(_v2.set(view.lookAt.x, view.lookAt.y, view.lookAt.z), 1 - Math.exp(-14 * dt));
+      const cameraUp = smoothCameraUp(this.camera.up, view.up, dt, localCar.onGround);
+      this.camera.up.set(cameraUp.x, cameraUp.y, cameraUp.z);
       // Trauma shake + speed FOV kick
       const speed = Math.hypot(localCar.vel.x, localCar.vel.y, localCar.vel.z);
       const targetFov = localCar.supersonic ? 86 : 74 + clamp((speed - 18) / 20, 0, 1) * 9;
@@ -1177,6 +1169,8 @@ export class GameViewportController {
       const speed = Math.hypot(localCar.vel.x, localCar.vel.y, localCar.vel.z);
       const onWall = localCar.onGround && localCar.groundNormal.y < 0.7;
       this.onHudUpdate?.({
+        godModeSeconds: localCar.godModeTimer ?? 0,
+        godModeItemMarker: this.getGodModeItemMarker(),
         boost: Math.round(localCar.boost),
         speedKph: Math.round(speed * 3.6),
         supersonic: localCar.supersonic,
@@ -1194,6 +1188,24 @@ export class GameViewportController {
         winner: this.activeState.winner,
       });
     }
+  }
+
+  private getGodModeItemMarker(): HudTelemetry['godModeItemMarker'] {
+    const item = this.activeState?.powerUps?.item;
+    const car = this.activeState?.cars.find((candidate) => candidate.id === this.localPlayerId);
+    if (!item || !car || this.activeState?.phase !== 'active') return null;
+    _proj.set(item.pos.x, item.pos.y + 3.4, item.pos.z).applyMatrix4(this.camera.matrixWorldInverse);
+    const behind = _proj.z > 0;
+    _proj.set(item.pos.x, item.pos.y + 3.4, item.pos.z).project(this.camera);
+    const x = behind ? -_proj.x : _proj.x;
+    const y = behind ? -_proj.y : _proj.y;
+    return {
+      x: clamp((x * 0.5 + 0.5) * this.container.clientWidth, 95, this.container.clientWidth - 95),
+      y: clamp((-y * 0.5 + 0.5) * this.container.clientHeight, 120, this.container.clientHeight - 110),
+      distance: Math.round(Math.hypot(car.pos.x - item.pos.x, car.pos.y - item.pos.y, car.pos.z - item.pos.z)),
+      offscreen: behind || Math.abs(x) > 0.85 || Math.abs(y) > 0.75,
+      angle: Math.atan2(-y, x) * 180 / Math.PI,
+    };
   }
 
   private rotateBall(omega: { x: number; y: number; z: number }, dt: number): void {
@@ -1264,6 +1276,7 @@ export class GameViewportController {
     this.stadium.dispose();
     this.ballRig.dispose();
     this.particles.dispose();
+    this.godModeItem.dispose();
     for (const { sprite } of this.boomSprites) {
       sprite.removeFromParent();
       sprite.material.map?.dispose();

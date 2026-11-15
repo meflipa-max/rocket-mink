@@ -27,6 +27,26 @@ class SoundEngine {
     return this.muted;
   }
 
+  public playGodModeAvailable(): void {
+    if (!this.ctx || !this.compressor || this.muted) return;
+    const now = this.ctx.currentTime;
+    for (const [index, frequency] of [523.25, 659.25, 783.99, 1046.5].entries()) {
+      const oscillator = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      const start = now + index * 0.13;
+      oscillator.type = 'triangle';
+      oscillator.frequency.value = frequency;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.32, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.5);
+      oscillator.connect(gain);
+      gain.connect(this.compressor);
+      oscillator.start(start);
+      oscillator.stop(start + 0.52);
+      oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); };
+    }
+  }
+
   public setMuted(mute: boolean): void {
     this.muted = mute;
     if (!this.ctx) return;

@@ -53,6 +53,9 @@ export interface PlayerInput {
 }
 
 export interface CarState {
+  /** Guest simulation time through which the host has applied this player's input. */
+  inputTime?: number;
+  godModeTimer: number;
   id: string;
   name: string;
   team: Team;
@@ -110,6 +113,11 @@ export type MatchPhase =
   | 'ended';
 
 export interface GameStateSnapshot {
+  powerUps: {
+    elapsed: number;
+    spawnCount: number;
+    item: { id: number; pos: Vec3; lifetime: number } | null;
+  };
   tick: number;
   phase: MatchPhase;
   phaseTimer: number;
@@ -163,7 +171,7 @@ export interface QuickChatEvent {
 
 export interface GameEventNotification {
   id: string;
-  kind: 'goal' | 'save' | 'demo' | 'shot' | 'overtime';
+  kind: 'goal' | 'save' | 'demo' | 'shot' | 'overtime' | 'powerup';
   title: string;
   subtitle: string;
   team?: Team;

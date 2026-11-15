@@ -31,6 +31,7 @@ import { normalizeRoomCodeInput } from './shared/roomHelpers';
 type AppScreenState = 'title' | 'playing' | 'paused' | 'gameover';
 
 const INITIAL_HUD: HudTelemetry = {
+  godModeSeconds: 0,
   boost: 33,
   speedKph: 0,
   supersonic: false,
@@ -137,7 +138,11 @@ export default function App() {
   const handleEvents = useCallback(
     (events: SimulationEvent[]) => {
       for (const ev of events) {
-        if (ev.type === 'goal') {
+        if (ev.type === 'god_mode_spawn') {
+          pushNotification({ kind: 'powerup', title: 'STELLA IN CAMPO!', subtitle: 'Raccoglila: God Mode per 6 secondi', highlight: true });
+        } else if (ev.type === 'god_mode_pickup') {
+          pushNotification({ kind: 'powerup', title: 'GOD MODE!', subtitle: ev.playerName, team: ev.team, highlight: ev.carId === localPlayerIdRef.current });
+        } else if (ev.type === 'goal') {
           pushNotification({
             kind: 'goal',
             title: 'GOL!',
@@ -271,8 +276,8 @@ export default function App() {
     ctrl.onNameplates = (plates) => setNameplates(plates);
     ctrl.onGoalMarkers = (markers) => setGoalMarkers(markers);
     ctrl.onEvents = handleEvents;
-    ctrl.onSendInput = (input) => {
-      socketRef.current?.emit('player:input', input);
+    ctrl.onSendInput = (input, time) => {
+      socketRef.current?.emit('player:input', { input, time });
     };
     ctrl.onPauseToggle = () => {
       if (screenStateRef.current === 'playing') {
@@ -398,7 +403,7 @@ export default function App() {
         setCarsSnapshot(snapshot.cars);
         setSubModal('none');
         setScreenState('playing');
-        controllerRef.current?.startMultiplayerMatch(snapshot, myId);
+        controllerRef.current?.startMultiplayerMatch(snapshot, myId, sock?.isHost ?? false);
       });
 
       sock.on('game:state', (snapshot: GameStateSnapshot) => {

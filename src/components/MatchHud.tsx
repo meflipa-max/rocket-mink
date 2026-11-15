@@ -1,6 +1,7 @@
 import { Volume2, VolumeX, Pause, SkipForward } from 'lucide-react';
 import type { GoalMarkerProjection, HudTelemetry, NameplateProjection } from '../game/renderer';
 import { GOAL_REPLAY_DURATION } from '../shared/replay';
+import { BUILD_LABEL } from '../shared/buildInfo';
 import type { CarState, GameEventNotification, QuickChatEvent, Team } from '../shared/types';
 
 interface MatchHudProps {
@@ -76,6 +77,19 @@ export function MatchHud({
 
   return (
     <div className="fixed inset-0 z-10 pointer-events-none select-none">
+      <div data-testid="build-version" className="fixed right-4 bottom-1 font-mono text-[10px] text-slate-300 hud-text-shadow">{BUILD_LABEL}</div>
+      {hud.godModeItemMarker && !isReplay && (
+        <div role="status" className="fixed -translate-x-1/2 -translate-y-1/2 rounded-xl border-2 border-yellow-200 bg-black/85 px-3 py-2 text-center text-yellow-200 shadow-[0_0_28px_#fde047aa]" style={{ left: hud.godModeItemMarker.x, top: hud.godModeItemMarker.y }}>
+          <div className="font-display text-lg font-black">★ GOD MODE {hud.godModeItemMarker.offscreen && <span className="inline-block" style={{ transform: `rotate(${hud.godModeItemMarker.angle}deg)` }}>➜</span>}</div>
+          <div className="text-xs font-bold">{hud.godModeItemMarker.distance} m · Raccogli la stella!</div>
+        </div>
+      )}
+      {hud.godModeSeconds > 0 && hud.phase === 'active' && !isReplay && (
+        <div role="status" className="god-mode-banner fixed bottom-7 left-1/2 -translate-x-1/2 rounded-2xl border border-white/70 px-6 py-3 text-center text-white shadow-lg">
+          <div className="font-display text-xl font-black tracking-wider">★ GOD MODE · {Math.ceil(hud.godModeSeconds)}s</div>
+          <div className="text-xs font-semibold">Velocità extra · Invincibile · Demolisci al contatto</div>
+        </div>
+      )}
       {action && !isReplay && hud.phase === 'active' && (
         <div key={action.id} role="status" className="action-callout fixed top-[22%] left-1/2 -translate-x-1/2 text-center hud-text-shadow">
           <div className={`font-display font-black italic tracking-wider text-3xl md:text-4xl ${action.kind === 'demo' ? 'text-orange-300' : 'text-amber-200'}`}>{action.title}</div>
@@ -359,7 +373,7 @@ export function MatchHud({
             data-testid="wall-drive-indicator"
             className="px-3 py-1 rounded-lg bg-sky-500/20 border border-sky-400/60 text-sky-200 text-xs font-extrabold tracking-wide w-fit shadow-lg hud-text-shadow pointer-events-none"
           >
-            GUIDA SU MURO · Spazio per staccarti
+            MURO / SOFFITTO · Spazio o clic sinistro per staccarti
           </div>
         )}
 

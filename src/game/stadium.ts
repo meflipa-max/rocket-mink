@@ -3,6 +3,7 @@ import {
   ARENA_HALF_X,
   ARENA_HALF_Z,
   ARENA_HEIGHT,
+  CEILING_RAMP_RADIUS,
   CORNER_CHAMFER,
   GOAL_DEPTH,
   GOAL_HALF_X,
@@ -11,6 +12,7 @@ import {
   createBoostPads,
 } from '../shared/arena';
 import type { ArenaId, BoostPadState } from '../shared/types';
+import { boostPadRadius } from '../shared/boostPickup';
 
 export interface StadiumRig {
   group: THREE.Group;
@@ -525,6 +527,43 @@ export function buildStadium(
     }
   }
 
+  // Match the tighter physical upper fillet and leave the middle of the roof flat.
+  for (let segment = 0; segment < perimeter.length; segment++) {
+    const next = (segment + 1) % perimeter.length;
+    const positions: number[] = [];
+    const indices: number[] = [];
+    for (let j = 0; j <= 24; j++) {
+      const angle = j / 24 * Math.PI / 2;
+      const distance = CEILING_RAMP_RADIUS * (1 - Math.cos(angle));
+      const y = ARENA_HEIGHT - CEILING_RAMP_RADIUS + CEILING_RAMP_RADIUS * Math.sin(angle);
+      for (const index of [segment, next]) {
+        const p = insetPoint(index, distance);
+        positions.push(p.x, y, p.y);
+      }
+      if (j < 24) {
+        const k = j * 2;
+        indices.push(k, k + 2, k + 1, k + 1, k + 2, k + 3);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    group.add(new THREE.Mesh(geo, rampMat));
+    disposables.push(geo);
+  }
+  const ceilingShape = new THREE.Shape(perimeter.map((_, i) => insetPoint(i, CEILING_RAMP_RADIUS)));
+  const ceilingGeo = new THREE.ShapeGeometry(ceilingShape);
+  ceilingGeo.rotateX(Math.PI / 2);
+  const ceilingMat = new THREE.MeshStandardMaterial({
+    color: 0x8bbbd5, map: wallTex, transparent: true, opacity: 0.16,
+    side: THREE.DoubleSide, depthWrite: false, roughness: 0.7,
+  });
+  const ceiling = new THREE.Mesh(ceilingGeo, ceilingMat);
+  ceiling.position.y = ARENA_HEIGHT;
+  group.add(ceiling);
+  disposables.push(ceilingGeo, ceilingMat);
+
   const createGoalSignTexture = (title: string, bgHex: string, borderHex: string) => {
     const canvas = document.createElement('canvas');
     canvas.width = 512;
@@ -832,7 +871,7 @@ export function buildStadium(
 
     const ring = new THREE.Mesh(ringGeo, rMat);
     ring.position.set(pad.pos.x, 0.13, pad.pos.z);
-    ring.scale.setScalar(pad.isBig ? 1.35 : 0.78);
+    ring.scale.setScalar(boostPadRadius(pad.isBig) / 0.72);
     group.add(ring);
 
     let orb: THREE.Mesh | null = null;

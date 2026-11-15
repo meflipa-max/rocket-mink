@@ -6,6 +6,7 @@ export class HostSimulation {
   readonly state;
   private readonly inputs: Record<string, PlayerInput> = {};
   private readonly inputAge: Record<string, number> = {};
+  private readonly pendingInputTime: Record<string, number> = {};
   private readonly playerIds: Set<string>;
 
   constructor(mode: MatchMode, arena: ArenaId, players: PlayerSeed[]) {
@@ -23,6 +24,7 @@ export class HostSimulation {
       botSlot.name = seed.name;
       botSlot.team = seed.team;
       botSlot.isBot = false;
+      delete botSlot.inputTime;
       if (seed.customization) {
         botSlot.customization = { ...seed.customization };
       }
@@ -45,16 +47,18 @@ export class HostSimulation {
     this.playerIds.delete(id);
     this.inputs[id] = { ...NEUTRAL_INPUT };
     delete this.inputAge[id];
+    delete this.pendingInputTime[id];
     const car = this.state.cars.find((c) => c.id === id);
     if (car) {
       car.isBot = true;
+      delete car.inputTime;
       if (!car.name.endsWith('[BOT]')) {
         car.name = `${car.name} [BOT]`;
       }
     }
   }
 
-  setInput(id: string, input: PlayerInput) {
+  setInput(id: string, input: PlayerInput, inputTime?: number) {
     if (!this.playerIds.has(id) || !input || typeof input !== 'object') return;
     const axis = (value: unknown) => typeof value === 'number' && Number.isFinite(value)
       ? Math.max(-1, Math.min(1, value)) : 0;
@@ -64,11 +68,15 @@ export class HostSimulation {
       handbrake: input.handbrake === true, jump: input.jump === true,
     };
     this.inputAge[id] = 0;
+    if (typeof inputTime === 'number' && Number.isFinite(inputTime) && inputTime >= 0) {
+      this.pendingInputTime[id] = inputTime;
+    }
   }
 
   removeInput(id: string) {
     this.inputs[id] = { ...NEUTRAL_INPUT };
     delete this.inputAge[id];
+    delete this.pendingInputTime[id];
   }
 
   step(dt: number) {
@@ -82,6 +90,14 @@ export class HostSimulation {
         }
       }
     }
-    return stepSimulation(this.state, this.inputs, stepDt);
+    const events = stepSimulation(this.state, this.inputs, stepDt);
+    for (const car of this.state.cars) {
+      if (this.pendingInputTime[car.id] !== undefined) {
+        car.inputTime = this.pendingInputTime[car.id];
+        delete this.pendingInputTime[car.id];
+      }
+      if (car.inputTime !== undefined) car.inputTime += stepDt;
+    }
+    return events;
   }
 }
