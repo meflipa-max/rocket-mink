@@ -389,7 +389,14 @@ export function replayCarInput(state: GameStateSnapshot, carId: string, input: P
 }
 
 /** Guests predict their own car and nearby ball contacts, never bots or the whole match. */
-export function stepClientPrediction(state: GameStateSnapshot, carId: string, input: PlayerInput, dt: number, extrapolateWorld: boolean): SimulationEvent[] {
+export function stepClientPrediction(
+  state: GameStateSnapshot,
+  carId: string,
+  input: PlayerInput,
+  dt: number,
+  extrapolateWorld: boolean,
+  extrapolateBall = extrapolateWorld,
+): SimulationEvent[] {
   const events: SimulationEvent[] = [];
   const car = state.cars.find((candidate) => candidate.id === carId);
   if (!car) return events;
@@ -398,6 +405,8 @@ export function stepClientPrediction(state: GameStateSnapshot, carId: string, in
     for (const remote of state.cars) {
       if (remote.id !== carId && remote.demolishedTimer <= 0) remote.pos = addV3(remote.pos, scaleV3(remote.vel, dt));
     }
+  }
+  if (extrapolateBall) {
     stepBall(state, dt, events);
     resolveCarBallCollisions({ ...state, cars: [car] }, events, false);
   }

@@ -17,6 +17,11 @@ import type {
   Team,
 } from './src/shared/types';
 import { DEFAULT_CUSTOMIZATION_BLUE, DEFAULT_CUSTOMIZATION_ORANGE } from './src/shared/types';
+import {
+  BOT_CUSTOMIZATIONS_BLUE,
+  BOT_CUSTOMIZATIONS_ORANGE,
+  normalizeCarCustomization,
+} from './src/shared/customization';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
@@ -131,23 +136,25 @@ function buildMatchSeeds(room: Room): PlayerSeed[] {
 
     while (blueCount < perTeam) {
       const name = `${BOT_NAMES[botIdx % BOT_NAMES.length]} [BOT]`;
+      const preset = BOT_CUSTOMIZATIONS_BLUE[botIdx % BOT_CUSTOMIZATIONS_BLUE.length];
       seeds.push({
         id: `bot-blue-${botIdx++}`,
         name,
         team: 'blue',
         isBot: true,
-        customization: { ...DEFAULT_CUSTOMIZATION_BLUE },
+        customization: { ...preset },
       });
       blueCount++;
     }
     while (orangeCount < perTeam) {
       const name = `${BOT_NAMES[botIdx % BOT_NAMES.length]} [BOT]`;
+      const preset = BOT_CUSTOMIZATIONS_ORANGE[botIdx % BOT_CUSTOMIZATIONS_ORANGE.length];
       seeds.push({
         id: `bot-orange-${botIdx++}`,
         name,
         team: 'orange',
         isBot: true,
-        customization: { ...DEFAULT_CUSTOMIZATION_ORANGE },
+        customization: { ...preset },
       });
       orangeCount++;
     }
@@ -520,7 +527,7 @@ async function startServer() {
       if (!room) return;
       const player = room.players.get(socket.id);
       if (!player || !payload?.customization) return;
-      player.customization = payload.customization;
+      player.customization = normalizeCarCustomization(payload.customization, player.customization);
       io.to(code).emit('room:updated', toRoomDetail(room));
     });
 

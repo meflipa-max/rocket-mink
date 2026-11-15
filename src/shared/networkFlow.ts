@@ -2,7 +2,10 @@ import type { PlayerInput } from './types';
 
 export function relayRates(players: number) {
   const count = Math.max(2, Math.min(6, players));
-  return { inputIntervalMs: 1000 / Math.min(8, Math.max(3, Math.floor(16 / (count - 1)))), stateIntervalTicks: count * 3 };
+  return {
+    inputIntervalMs: 1000 / Math.min(15, Math.max(6, Math.floor(24 / (count - 1)))),
+    stateIntervalTicks: Math.min(8, Math.max(4, count * 2)),
+  };
 }
 
 /** Limit redundant relay keepalives without delaying any control transition. */

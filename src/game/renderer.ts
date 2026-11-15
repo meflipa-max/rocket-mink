@@ -107,8 +107,8 @@ export class GameViewportController {
   private carRigs = new Map<string, CarVisualRig>();
   private garageRig: CarVisualRig | null = null;
   private garageCustomization: CarCustomization = { ...DEFAULT_CUSTOMIZATION_BLUE };
-  private garageOrbit = 0.7;
-  private garageZoom = 6.2;
+  private garageOrbit = 0.72;
+  private garageZoom = 5.4;
   private garageDragX: number | null = null;
   private boomSprites: Array<{ sprite: THREE.Sprite; age: number }> = [];
   private replaySampleTime: number | null = null;
@@ -133,6 +133,8 @@ export class GameViewportController {
   private mouseJump = false;
   private prediction = new ClientPrediction();
   private prevInput: PlayerInput = { ...NEUTRAL_INPUT };
+  private localInputSeq = 0;
+  private localVisualPosOffset = new THREE.Vector3();
   private cameraPos = new THREE.Vector3(0, 16, -42);
   private cameraLook = new THREE.Vector3(0, 2, 0);
   private trauma = 0;
@@ -144,7 +146,7 @@ export class GameViewportController {
   // Callbacks
   public onHudUpdate?: (hud: HudTelemetry) => void;
   public onEvents?: (events: SimulationEvent[]) => void;
-  public onSendInput?: (input: PlayerInput, time: number) => void;
+  public onSendInput?: (input: PlayerInput, time: number, seq: number) => void;
   public onBallCamChange?: (enabled: boolean) => void;
   public onNameplates?: (plates: NameplateProjection[]) => void;
   public onGoalMarkers?: (markers: GoalMarkerProjection[]) => void;
@@ -345,6 +347,7 @@ export class GameViewportController {
 
   public startLocalMatch(snapshot: GameStateSnapshot, localId: string): void {
     this.isMultiplayer = false;
+    this.localVisualPosOffset.set(0, 0, 0);
     this.localPlayerId = localId;
     this.replayRecorder.clear();
     this.activeReplayClip = null;
@@ -364,6 +367,8 @@ export class GameViewportController {
   public startMultiplayerMatch(snapshot: GameStateSnapshot, localId: string, isHost = false): void {
     this.isLocalHost = isHost;
     this.prediction.reset();
+    this.localInputSeq = 0;
+    this.localVisualPosOffset.set(0, 0, 0);
     this.inputSendAccum = 1;
     this.prevInput = { ...NEUTRAL_INPUT };
     this.isMultiplayer = true;
@@ -409,6 +414,14 @@ export class GameViewportController {
       return;
     }
 
+    // Capture pre-reconciliation visual position so any correction glides out smoothly
+    const prevLocal = this.activeState.cars.find((c) => c.id === this.localPlayerId);
+    const prevLocalX = prevLocal?.pos.x ?? 0;
+    const prevLocalY = prevLocal?.pos.y ?? 0;
+    const prevLocalZ = prevLocal?.pos.z ?? 0;
+    const prevPhase = this.activeState.phase;
+    const prevDemo = (prevLocal?.demolishedTimer ?? 0) > 0;
+
     // Check if cars roster changed (count or player IDs, e.g. hot-join replacing a bot)
     const rosterChanged =
       this.activeState.cars.length !== snapshot.cars.length ||
@@ -416,8 +429,29 @@ export class GameViewportController {
     if (rosterChanged) {
       this.activeState = this.prediction.reconcile(this.activeState, snapshot, this.localPlayerId);
       this.syncCarRigsFromState(this.activeState);
+      this.localVisualPosOffset.set(0, 0, 0);
     } else {
       this.activeState = this.prediction.reconcile(this.activeState, snapshot, this.localPlayerId);
+      const nextLocal = this.activeState.cars.find((c) => c.id === this.localPlayerId);
+      if (
+        prevLocal &&
+        nextLocal &&
+        prevPhase === 'active' &&
+        this.activeState.phase === 'active' &&
+        prevDemo === (nextLocal.demolishedTimer > 0)
+      ) {
+        const dx = prevLocalX + this.localVisualPosOffset.x - nextLocal.pos.x;
+        const dy = prevLocalY + this.localVisualPosOffset.y - nextLocal.pos.y;
+        const dz = prevLocalZ + this.localVisualPosOffset.z - nextLocal.pos.z;
+        const err = Math.hypot(dx, dy, dz);
+        if (err > 0.005 && err < 3.5) {
+          this.localVisualPosOffset.set(dx, dy, dz);
+        } else if (err >= 3.5) {
+          this.localVisualPosOffset.set(0, 0, 0);
+        }
+      } else {
+        this.localVisualPosOffset.set(0, 0, 0);
+      }
     }
   }
 
@@ -750,10 +784,10 @@ export class GameViewportController {
       const h = this.container.clientHeight;
       const compact = w < 768;
       const zoom = this.garageZoom * (compact ? 1.4 : 1);
-      this.camera.position.set(3.5 + Math.cos(angle) * zoom, 2.8, Math.sin(angle) * zoom);
-      this.camera.lookAt(3.5, 0.45, 0);
+      this.camera.position.set(3.5 + Math.cos(angle) * zoom, 2.25, Math.sin(angle) * zoom);
+      this.camera.lookAt(3.5, 0.50, 0);
       this.camera.setViewOffset(w, h, compact ? 0 : -w * 0.18, compact ? h * 0.27 : 0, w, h);
-      this.camera.fov = compact ? 56 : 50;
+      this.camera.fov = compact ? 56 : 48;
       this.camera.updateProjectionMatrix();
       this.garageRig.group.rotation.y = 0;
       const flamePulse = 0.6 + Math.sin(this.elapsed * 14) * 0.2;
@@ -772,7 +806,7 @@ export class GameViewportController {
 
     if ((this.mode === 'playing' && !this.paused) || (this.isMultiplayer && this.mode === 'paused')) {
       if (this.isMultiplayer) {
-        // Stream local inputs immediately on change, at 45Hz while active, and >=10Hz keepalive when idle
+        // Stream local inputs immediately on change, at 60Hz while active, and >=10Hz keepalive when idle
         this.inputSendAccum += dt;
         const discreteChanged =
           input.jump !== this.prevInput.jump ||
@@ -794,17 +828,25 @@ export class GameViewportController {
           input.jump;
         if (
           discreteChanged ||
-          (isNonNeutral && this.inputSendAccum >= 1 / 45) ||
+          (isNonNeutral && this.inputSendAccum >= 1 / 62) ||
           this.inputSendAccum >= 1 / 10
         ) {
           this.inputSendAccum = 0;
-          this.onSendInput?.(input, this.prediction.time);
+          this.localInputSeq += 1;
+          this.onSendInput?.(input, this.prediction.time, this.localInputSeq);
         }
         this.prevInput = input;
 
         // 60fps local prediction only while host packets are fresh (<1.2s); freeze on stall so timelines never diverge
         const netFresh = performance.now() - this.lastNetPacketMs < 1200;
-        const predEvents = this.prediction.advance(this.activeState, this.localPlayerId, input, dt, netFresh && !this.isLocalHost);
+        const predEvents = this.prediction.advance(
+          this.activeState,
+          this.localPlayerId,
+          input,
+          dt,
+          netFresh && !this.isLocalHost,
+          this.localInputSeq,
+        );
         if (this.activeState.phase === 'active' && netFresh) {
           // Trigger local jump/flip feedback immediately without waiting for host round-trip
           for (const ev of predEvents) {
@@ -949,15 +991,21 @@ export class GameViewportController {
     }
 
     // Visual interpolation & boost particle emission
-    const interpFactor = this.isMultiplayer ? clamp(1 - Math.exp(-36 * dt), 0, 1) : 1;
-    this.displayBallPos.lerp(
-      _v1.set(
-        this.activeState.ball.pos.x,
-        this.activeState.ball.pos.y,
-        this.activeState.ball.pos.z,
-      ),
-      interpFactor,
+    const ballInterp = this.isMultiplayer ? clamp(1 - Math.exp(-26 * dt), 0, 1) : 1;
+    const remoteInterp = this.isMultiplayer ? clamp(1 - Math.exp(-24 * dt), 0, 1) : 1;
+    this.localVisualPosOffset.multiplyScalar(Math.exp(-16 * dt));
+    if (this.localVisualPosOffset.lengthSq() < 1e-6) this.localVisualPosOffset.set(0, 0, 0);
+
+    _v1.set(
+      this.activeState.ball.pos.x,
+      this.activeState.ball.pos.y,
+      this.activeState.ball.pos.z,
     );
+    if (this.displayBallPos.distanceTo(_v1) > 8) {
+      this.displayBallPos.copy(_v1);
+    } else {
+      this.displayBallPos.lerp(_v1, ballInterp);
+    }
     this.ballRig.group.position.copy(this.displayBallPos);
     this.rotateBall(this.activeState.ball.angVel, dt);
 
@@ -988,8 +1036,18 @@ export class GameViewportController {
 
       _v1.set(car.pos.x, car.pos.y, car.pos.z);
       _q1.set(car.quat.x, car.quat.y, car.quat.z, car.quat.w);
-      disp.pos.lerp(_v1, interpFactor);
-      disp.quat.slerp(_q1, interpFactor);
+      if (car.id === this.localPlayerId && this.isMultiplayer && !this.isLocalHost) {
+        // Guest local car renders with 0ms driving lag + smooth error decay
+        disp.pos.copy(_v1).add(this.localVisualPosOffset);
+        disp.quat.copy(_q1);
+      } else if (disp.pos.distanceTo(_v1) > 8) {
+        disp.pos.copy(_v1);
+        disp.quat.copy(_q1);
+      } else {
+        const carFactor = car.id === this.localPlayerId ? clamp(1 - Math.exp(-36 * dt), 0, 1) : remoteInterp;
+        disp.pos.lerp(_v1, carFactor);
+        disp.quat.slerp(_q1, carFactor);
+      }
 
       rig.group.position.copy(disp.pos);
       rig.group.quaternion.copy(disp.quat);

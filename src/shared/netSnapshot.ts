@@ -10,6 +10,7 @@ import type {
 export interface CompactCarWire {
   gm?: number;
   it?: number;
+  is?: number;
   aj?: number;
   id: string;
   p: [number, number, number];
@@ -110,6 +111,7 @@ export function packCompactSnapshot(
       return {
         gm: r2(car.godModeTimer ?? 0),
         it: car.inputTime === undefined ? undefined : Math.round(car.inputTime * 10000) / 10000,
+        ...(car.inputSeq !== undefined ? { is: car.inputSeq } : {}),
         aj: car.airTimeSinceJump,
         id: car.id,
         p: [r2(car.pos.x), r2(car.pos.y), r2(car.pos.z)],
@@ -179,6 +181,7 @@ export function unpackCompactSnapshot(
       return {
         id: wc.id,
         inputTime: wc.it,
+        inputSeq: wc.is,
         godModeTimer: wc.gm ?? 0,
         name: base?.name ?? 'Pilota',
         team: base?.team ?? 'blue',

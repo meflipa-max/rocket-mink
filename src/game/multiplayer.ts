@@ -813,7 +813,7 @@ export class MultiplayerClient {
         const prevSeq = this.lastPeerInputSeq.get(id) ?? 0;
         if (data.seq <= prevSeq) return;
         this.lastPeerInputSeq.set(id, data.seq);
-        this.simulation?.setInput(id, data.input as PlayerInput, data.time);
+        this.simulation?.setInput(id, data.input as PlayerInput, data.time, data.seq);
       } else {
         this.simulation?.setInput(id, (data?.input ?? data) as PlayerInput, data?.time);
       }
@@ -916,7 +916,7 @@ export class MultiplayerClient {
       }
       if (steps === 0) return;
 
-      const sendWebRtc = ticks - lastWebRtcTick >= 2; // 30Hz over unreliable WebRTC DataChannel
+      const sendWebRtc = ticks - lastWebRtcTick >= (this.peers.size <= 2 ? 1 : 2); // 60Hz for 1v1/2-guest P2P, 30Hz for larger rooms
       const sendRelay = ticks - lastRelayTick >= relayRates(this.room?.players.length ?? 2).stateIntervalTicks && this.relayPeers.size > 0;
 
       if (sendWebRtc) {
@@ -932,7 +932,7 @@ export class MultiplayerClient {
           const serialized = JSON.stringify({ event: 'game:state:c', payload: wire });
           for (const peer of this.peers.values()) {
             const ch = peer.stateChannel;
-            if (ch?.readyState === 'open' && ch.bufferedAmount < 2048) {
+            if (ch?.readyState === 'open' && ch.bufferedAmount < 16384) {
               ch.send(serialized);
             }
           }
@@ -1056,10 +1056,12 @@ export class MultiplayerClient {
     } else if (this.hostId || this.usingRelay) {
       if (event === 'player:input') {
         if (!this.inputLimiter.accept(data?.input ?? data, performance.now(), this.usingRelay, relayRates(this.room?.players.length ?? 2).inputIntervalMs)) return this;
+        const seq = typeof data?.seq === 'number' && data.seq > this.inputSeq ? data.seq : ++this.inputSeq;
+        this.inputSeq = seq;
         this.sendPeer(
           this.hostId,
           'player:input',
-          { seq: ++this.inputSeq, input: data?.input ?? data, time: data?.time },
+          { seq, input: data?.input ?? data, time: data?.time },
           true,
         );
       } else {

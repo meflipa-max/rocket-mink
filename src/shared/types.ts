@@ -4,15 +4,29 @@ export type MatchMode = '1v1' | '2v2' | '3v3' | 'freeplay';
 
 export type ArenaId = 'dfh_night' | 'neo_tokyo' | 'mannfield_day';
 
-export type CarBodyStyle = 'octane' | 'dominus' | 'fennec';
+export type CarBodyStyle = 'octane' | 'dominus' | 'fennec' | 'apex' | 'formula' | 'titan';
 
-export type DecalStyle = 'stripes' | 'flames' | 'cyber' | 'wings' | 'clean';
+export type DecalStyle =
+  | 'stripes'
+  | 'flames'
+  | 'cyber'
+  | 'wings'
+  | 'checkers'
+  | 'lightning'
+  | 'carbon_fade'
+  | 'clean';
 
-export type WheelStyle = 'sport' | 'aero' | 'turbine' | 'cyber';
+export type WheelStyle = 'sport' | 'aero' | 'turbine' | 'cyber' | 'star' | 'offroad';
 
-export type PaintFinish = 'gloss' | 'matte' | 'metallic' | 'anodized';
+export type PaintFinish = 'gloss' | 'matte' | 'metallic' | 'anodized' | 'pearlescent' | 'chrome';
 
-export type TopperStyle = 'none' | 'halo' | 'crown' | 'fin';
+export type TopperStyle = 'none' | 'halo' | 'crown' | 'fin' | 'horns' | 'visor' | 'antenna';
+
+export type SpoilerStyle = 'sport' | 'ducktail' | 'gt_wing' | 'twin_blade' | 'none';
+
+export type WindowTint = 'dark' | 'ice' | 'gold' | 'crimson' | 'emerald';
+
+export type TrimStyle = 'carbon' | 'chrome' | 'body';
 
 export interface CarCustomization {
   body: CarBodyStyle;
@@ -24,8 +38,12 @@ export interface CarCustomization {
   paintFinish?: PaintFinish;
   topper?: TopperStyle;
   underglow?: boolean;
+  underglowColor?: string;
   wheelColor?: string;
-  spoiler?: 'sport' | 'ducktail' | 'none';
+  spoiler?: SpoilerStyle;
+  windowTint?: WindowTint;
+  trimStyle?: TrimStyle;
+  headlightColor?: string;
 }
 
 export interface Vec3 {
@@ -55,6 +73,8 @@ export interface PlayerInput {
 export interface CarState {
   /** Guest simulation time through which the host has applied this player's input. */
   inputTime?: number;
+  /** Latest input sequence number acknowledged by the host for this player. */
+  inputSeq?: number;
   godModeTimer: number;
   id: string;
   name: string;
@@ -189,16 +209,28 @@ export const DEFAULT_CUSTOMIZATION_BLUE: CarCustomization = {
   paintFinish: 'metallic',
   topper: 'none',
   underglow: false,
+  underglowColor: '#38bdf8',
+  wheelColor: '#38bdf8',
+  spoiler: 'sport',
+  windowTint: 'dark',
+  trimStyle: 'carbon',
+  headlightColor: '#e0f2fe',
 };
 
 export const DEFAULT_CUSTOMIZATION_ORANGE: CarCustomization = {
-  body: 'octane',
+  body: 'dominus',
   primaryColor: '#ea580c',
   accentColor: '#fbbf24',
   boostColor: '#f97316',
   decal: 'flames',
-  wheelStyle: 'sport',
+  wheelStyle: 'star',
   paintFinish: 'metallic',
   topper: 'none',
   underglow: false,
+  underglowColor: '#fbbf24',
+  wheelColor: '#fbbf24',
+  spoiler: 'sport',
+  windowTint: 'dark',
+  trimStyle: 'carbon',
+  headlightColor: '#fef3c7',
 };

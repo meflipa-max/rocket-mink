@@ -7,6 +7,7 @@ export class HostSimulation {
   private readonly inputs: Record<string, PlayerInput> = {};
   private readonly inputAge: Record<string, number> = {};
   private readonly pendingInputTime: Record<string, number> = {};
+  private readonly pendingInputSeq: Record<string, number> = {};
   private readonly playerIds: Set<string>;
 
   constructor(mode: MatchMode, arena: ArenaId, players: PlayerSeed[]) {
@@ -25,6 +26,7 @@ export class HostSimulation {
       botSlot.team = seed.team;
       botSlot.isBot = false;
       delete botSlot.inputTime;
+      delete botSlot.inputSeq;
       if (seed.customization) {
         botSlot.customization = { ...seed.customization };
       }
@@ -48,17 +50,19 @@ export class HostSimulation {
     this.inputs[id] = { ...NEUTRAL_INPUT };
     delete this.inputAge[id];
     delete this.pendingInputTime[id];
+    delete this.pendingInputSeq[id];
     const car = this.state.cars.find((c) => c.id === id);
     if (car) {
       car.isBot = true;
       delete car.inputTime;
+      delete car.inputSeq;
       if (!car.name.endsWith('[BOT]')) {
         car.name = `${car.name} [BOT]`;
       }
     }
   }
 
-  setInput(id: string, input: PlayerInput, inputTime?: number) {
+  setInput(id: string, input: PlayerInput, inputTime?: number, inputSeq?: number) {
     if (!this.playerIds.has(id) || !input || typeof input !== 'object') return;
     const axis = (value: unknown) => typeof value === 'number' && Number.isFinite(value)
       ? Math.max(-1, Math.min(1, value)) : 0;
@@ -71,12 +75,16 @@ export class HostSimulation {
     if (typeof inputTime === 'number' && Number.isFinite(inputTime) && inputTime >= 0) {
       this.pendingInputTime[id] = inputTime;
     }
+    if (typeof inputSeq === 'number' && Number.isFinite(inputSeq) && inputSeq >= 0) {
+      this.pendingInputSeq[id] = inputSeq;
+    }
   }
 
   removeInput(id: string) {
     this.inputs[id] = { ...NEUTRAL_INPUT };
     delete this.inputAge[id];
     delete this.pendingInputTime[id];
+    delete this.pendingInputSeq[id];
   }
 
   step(dt: number) {
@@ -95,6 +103,10 @@ export class HostSimulation {
       if (this.pendingInputTime[car.id] !== undefined) {
         car.inputTime = this.pendingInputTime[car.id];
         delete this.pendingInputTime[car.id];
+      }
+      if (this.pendingInputSeq[car.id] !== undefined) {
+        car.inputSeq = this.pendingInputSeq[car.id];
+        delete this.pendingInputSeq[car.id];
       }
       if (car.inputTime !== undefined) car.inputTime += stepDt;
     }

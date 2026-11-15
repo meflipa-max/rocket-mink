@@ -25,7 +25,12 @@ import type {
   RoomSummary,
   Team,
 } from './shared/types';
-import { DEFAULT_CUSTOMIZATION_BLUE, DEFAULT_CUSTOMIZATION_ORANGE } from './shared/types';
+import { DEFAULT_CUSTOMIZATION_BLUE } from './shared/types';
+import {
+  BOT_CUSTOMIZATIONS_BLUE,
+  BOT_CUSTOMIZATIONS_ORANGE,
+  normalizeCarCustomization,
+} from './shared/customization';
 import { normalizeRoomCodeInput } from './shared/roomHelpers';
 
 type AppScreenState = 'title' | 'playing' | 'paused' | 'gameover';
@@ -52,7 +57,7 @@ const INITIAL_HUD: HudTelemetry = {
 function loadStoredCustomization(): CarCustomization {
   try {
     const raw = localStorage.getItem('turbo_league_car');
-    if (raw) return { ...DEFAULT_CUSTOMIZATION_BLUE, ...JSON.parse(raw) };
+    if (raw) return normalizeCarCustomization(JSON.parse(raw), DEFAULT_CUSTOMIZATION_BLUE);
   } catch {
     // ignore storage errors
   }
@@ -139,7 +144,7 @@ export default function App() {
     (events: SimulationEvent[]) => {
       for (const ev of events) {
         if (ev.type === 'god_mode_spawn') {
-          pushNotification({ kind: 'powerup', title: 'STELLA IN CAMPO!', subtitle: 'Raccoglila: God Mode per 6 secondi', highlight: true });
+          pushNotification({ kind: 'powerup', title: 'STELLA IN CAMPO!', subtitle: 'Raccoglila: God Mode per 12 secondi', highlight: true });
         } else if (ev.type === 'god_mode_pickup') {
           pushNotification({ kind: 'powerup', title: 'GOD MODE!', subtitle: ev.playerName, team: ev.team, highlight: ev.carId === localPlayerIdRef.current });
         } else if (ev.type === 'goal') {
@@ -212,21 +217,23 @@ export default function App() {
       const perTeam = mode === '1v1' ? 1 : mode === '2v2' ? 2 : 3;
       let bIdx = 0;
       for (let i = 1; i < perTeam; i++) {
+        const botCust = BOT_CUSTOMIZATIONS_BLUE[(i - 1) % BOT_CUSTOMIZATIONS_BLUE.length];
         seeds.push({
           id: `bot-b-${i}`,
           name: botNames[bIdx++ % botNames.length],
           team: 'blue',
           isBot: true,
-          customization: { ...DEFAULT_CUSTOMIZATION_BLUE },
+          customization: { ...botCust },
         });
       }
       for (let i = 0; i < perTeam; i++) {
+        const botCust = BOT_CUSTOMIZATIONS_ORANGE[i % BOT_CUSTOMIZATIONS_ORANGE.length];
         seeds.push({
           id: `bot-o-${i}`,
           name: botNames[bIdx++ % botNames.length],
           team: 'orange',
           isBot: true,
-          customization: { ...DEFAULT_CUSTOMIZATION_ORANGE },
+          customization: { ...botCust },
         });
       }
     }
@@ -276,8 +283,8 @@ export default function App() {
     ctrl.onNameplates = (plates) => setNameplates(plates);
     ctrl.onGoalMarkers = (markers) => setGoalMarkers(markers);
     ctrl.onEvents = handleEvents;
-    ctrl.onSendInput = (input, time) => {
-      socketRef.current?.emit('player:input', { input, time });
+    ctrl.onSendInput = (input, time, seq) => {
+      socketRef.current?.emit('player:input', { input, time, seq });
     };
     ctrl.onPauseToggle = () => {
       if (screenStateRef.current === 'playing') {

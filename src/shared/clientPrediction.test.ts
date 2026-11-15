@@ -114,3 +114,58 @@ test('guest stays responsive across repeated compact snapshots with 100ms and 30
     assert.ok(Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z) < 0.2);
   }
 });
+
+test('in-flight guest jump and steer are never cancelled when host echoes advanced inputTime for an older seq', () => {
+  const host = new HostSimulation('1v1', 'dfh_night', [{ id: 'guest', name: 'Guest', team: 'blue' }]);
+  host.state.phase = 'active';
+  host.state.boostPads = [];
+  let client = structuredClone(host.state);
+  const prediction = new ClientPrediction();
+
+  // Frames 0..9: steady throttle (seq 1) received by host
+  const drive = { ...NEUTRAL_INPUT, throttle: 1 };
+  host.setInput('guest', drive, 0, 1);
+  for (let i = 0; i < 10; i++) {
+    prediction.advance(client, 'guest', drive, DT, true, 1);
+    host.step(DT);
+  }
+
+  // Frame 10..15: guest taps Jump + Steer (seq 2), STILL IN FLIGHT to host
+  const jumpTurn = { ...NEUTRAL_INPUT, throttle: 1, steer: 1, jump: true };
+  for (let i = 0; i < 6; i++) {
+    prediction.advance(client, 'guest', jumpTurn, DT, true, 2);
+    // Host is still running seq 1 because seq 2 hasn't arrived yet!
+    host.step(DT);
+  }
+  assert.ok(client.cars[0].pos.y > 0.7, 'Guest should already be airborne locally');
+
+  // Host sends a snapshot BEFORE receiving seq 2 (inputTime advanced past 10*DT, inputSeq is still 1)
+  const preAckSnap = unpackCompactSnapshot(packCompactSnapshot(host.state, 1), host.state);
+  assert.equal(preAckSnap.cars[0].inputSeq, 1);
+  assert.ok(preAckSnap.cars[0].inputTime! > 15 * DT);
+
+  client = prediction.reconcile(client, preAckSnap, 'guest');
+  assert.ok(
+    client.cars[0].pos.y > 0.7 && !client.cars[0].onGround,
+    `In-flight jump must NOT be cancelled back onto ground (y=${client.cars[0].pos.y}, onGround=${client.cars[0].onGround})`,
+  );
+});
+
+test('ball continues predicting smoothly past 100ms between relay snapshots while remote cars stay bounded', () => {
+  const state = match();
+  state.ball.pos = { x: 0, y: 2, z: 0 };
+  state.ball.vel = { x: 12, y: 0, z: 0 };
+  const prediction = new ClientPrediction();
+
+  // Advance 12 frames = 200ms without a host snapshot
+  let xAt100ms = 0;
+  for (let i = 0; i < 12; i++) {
+    prediction.advance(state, 'guest', NEUTRAL_INPUT, DT, true, 1);
+    if (i === 5) xAt100ms = state.ball.pos.x;
+  }
+  assert.ok(
+    state.ball.pos.x > xAt100ms + 0.8,
+    `Ball should keep gliding between 100ms and 200ms (at100ms=${xAt100ms}, at200ms=${state.ball.pos.x})`,
+  );
+});
+
