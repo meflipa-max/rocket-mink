@@ -566,6 +566,7 @@ export default function App() {
         <GarageModal
           customization={customization}
           onChange={handleCustomizationChange}
+          onFocusView={(focus) => controllerRef.current?.setGarageFocus(focus)}
           onClose={() => {
             controllerRef.current?.setMode('title');
             setSubModal('none');

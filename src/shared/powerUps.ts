@@ -12,13 +12,13 @@ export const GOD_MODE_SPAWN_TIMES = [10, 120, 240] as const;
 /** A finite spring in front of the nearest powered car; never teleports or attracts across the field. */
 export function applyGodModeMagnet(state: GameStateSnapshot, dt: number): boolean {
   let owner = null as GameStateSnapshot['cars'][number] | null;
-  let nearest = 18;
+  let nearest = 15.0;
   for (const car of state.cars) {
     if (car.godModeTimer <= 0 || car.demolishedTimer > 0) continue;
     const toBall = subV3(state.ball.pos, car.pos);
     const distance = lenV3(toBall);
     const forward = rotateVecByQuat(v3(0, 0, 1), car.quat);
-    if (distance < nearest && (distance < 10 || dotV3(normV3(toBall, forward), forward) > -0.55)) {
+    if (distance < nearest && (distance < 6.0 || dotV3(normV3(toBall, forward), forward) > 0.0)) {
       owner = car;
       nearest = distance;
     }
@@ -32,10 +32,10 @@ export function applyGodModeMagnet(state: GameStateSnapshot, dt: number): boolea
     if (!hit.hit) break;
     target = addV3(target, scaleV3(hit.normal, hit.penetration + 0.01));
   }
-  const closeCapture = nearest < 6.5;
-  const posGain = closeCapture ? 42 : 34;
-  const velGain = closeCapture ? 18 : 14;
-  const maxAccel = closeCapture ? 340 : 280;
+  const closeCapture = nearest < 5.5;
+  const posGain = closeCapture ? 24 : 18;
+  const velGain = closeCapture ? 11 : 8;
+  const maxAccel = closeCapture ? 190 : 145;
   const spring = addV3(scaleV3(subV3(target, state.ball.pos), posGain), scaleV3(subV3(owner.vel, state.ball.vel), velGain));
   const acceleration = scaleV3(spring, Math.min(1, maxAccel / Math.max(1e-8, lenV3(spring))));
   state.ball.vel = addV3(state.ball.vel, scaleV3(acceleration, Math.max(0, Math.min(dt, 0.05))));

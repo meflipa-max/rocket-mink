@@ -28,11 +28,19 @@ export type WindowTint = 'dark' | 'ice' | 'gold' | 'crimson' | 'emerald';
 
 export type TrimStyle = 'carbon' | 'chrome' | 'body';
 
+export type BoostEffectStyle =
+  | 'classic_flame'
+  | 'neon_cyber'
+  | 'rainbow_prism'
+  | 'frost_blizzard'
+  | 'black_hole';
+
 export interface CarCustomization {
   body: CarBodyStyle;
   primaryColor: string;
   accentColor: string;
   boostColor: string;
+  boostEffect?: BoostEffectStyle;
   decal: DecalStyle;
   wheelStyle: WheelStyle;
   paintFinish?: PaintFinish;
@@ -204,6 +212,7 @@ export const DEFAULT_CUSTOMIZATION_BLUE: CarCustomization = {
   primaryColor: '#1d4ed8',
   accentColor: '#38bdf8',
   boostColor: '#38bdf8',
+  boostEffect: 'classic_flame',
   decal: 'stripes',
   wheelStyle: 'sport',
   paintFinish: 'metallic',
@@ -222,6 +231,7 @@ export const DEFAULT_CUSTOMIZATION_ORANGE: CarCustomization = {
   primaryColor: '#ea580c',
   accentColor: '#fbbf24',
   boostColor: '#f97316',
+  boostEffect: 'classic_flame',
   decal: 'flames',
   wheelStyle: 'star',
   paintFinish: 'metallic',

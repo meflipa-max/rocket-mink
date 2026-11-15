@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   ACCENT_PRESETS,
   BODY_GEOMETRY_SPECS,
+  BOOST_EFFECT_OPTIONS,
   BOOST_PRESETS,
   CAR_BODY_LIST,
   COLOR_PRESETS,
@@ -22,16 +23,18 @@ import { DEFAULT_CUSTOMIZATION_BLUE } from '../shared/types';
 interface GarageModalProps {
   customization: CarCustomization;
   onChange: (next: CarCustomization) => void;
+  onFocusView?: (focus: 'front' | 'rear') => void;
   onClose: () => void;
 }
 
-type GarageTab = 'chassis' | 'paint' | 'livery' | 'wheels';
+type GarageTab = 'chassis' | 'paint' | 'livery' | 'wheels' | 'boost';
 
 const TABS: Array<{ id: GarageTab; label: string }> = [
   { id: 'chassis', label: 'Telaio' },
   { id: 'paint', label: 'Vernice' },
-  { id: 'livery', label: 'Livrea & Luci' },
+  { id: 'livery', label: 'Livrea' },
   { id: 'wheels', label: 'Ruote' },
+  { id: 'boost', label: 'Fumo' },
 ];
 
 function SwatchRow({
@@ -87,8 +90,13 @@ function SwatchRow({
   );
 }
 
-export function GarageModal({ customization, onChange, onClose }: GarageModalProps) {
+export function GarageModal({ customization, onChange, onFocusView, onClose }: GarageModalProps) {
   const [activeTab, setActiveTab] = useState<GarageTab>('chassis');
+
+  const handleSelectTab = (tab: GarageTab) => {
+    setActiveTab(tab);
+    onFocusView?.(tab === 'boost' ? 'rear' : 'front');
+  };
 
   const paintFinish = customization.paintFinish ?? 'metallic';
   const topper = customization.topper ?? 'none';
@@ -99,6 +107,7 @@ export function GarageModal({ customization, onChange, onClose }: GarageModalPro
   const windowTint = customization.windowTint ?? 'dark';
   const trimStyle = customization.trimStyle ?? 'carbon';
   const headlightColor = customization.headlightColor ?? '#e0f2fe';
+  const boostEffect = customization.boostEffect ?? 'classic_flame';
   const activeBodySpec = BODY_GEOMETRY_SPECS[customization.body] ?? BODY_GEOMETRY_SPECS.octane;
 
   return (
@@ -158,7 +167,7 @@ export function GarageModal({ customization, onChange, onClose }: GarageModalPro
           <div
             role="tablist"
             aria-label="Sezioni personalizzazione auto"
-            className="grid grid-cols-4 gap-1 p-1 mt-3 rounded-lg bg-slate-950/80 border border-white/10"
+            className="grid grid-cols-5 gap-1 p-1 mt-3 rounded-lg bg-slate-950/80 border border-white/10"
           >
             {TABS.map((tab) => (
               <button
@@ -166,8 +175,8 @@ export function GarageModal({ customization, onChange, onClose }: GarageModalPro
                 role="tab"
                 type="button"
                 aria-selected={activeTab === tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`py-2 px-1.5 rounded-md text-[11px] font-bold transition-colors whitespace-nowrap cursor-pointer focus-visible:outline-2 focus-visible:outline-sky-400 ${
+                onClick={() => handleSelectTab(tab.id)}
+                className={`py-2 px-1 rounded-md text-[11px] font-bold transition-colors whitespace-nowrap cursor-pointer focus-visible:outline-2 focus-visible:outline-sky-400 ${
                   activeTab === tab.id
                     ? 'bg-sky-500 text-slate-950'
                     : 'text-slate-300 hover:bg-white/10 hover:text-white'
@@ -382,14 +391,6 @@ export function GarageModal({ customization, onChange, onClose }: GarageModalPro
                 onSelect={(hex) => onChange({ ...customization, headlightColor: hex })}
               />
 
-              <SwatchRow
-                label="Colore Fiamma Turbo"
-                value={customization.boostColor}
-                presets={BOOST_PRESETS}
-                pickerLabel="Colore Turbo Personalizzato"
-                onSelect={(hex) => onChange({ ...customization, boostColor: hex })}
-              />
-
               <div className="pt-2 border-t border-white/10 space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-slate-300">Neon Sottoscocca</span>
@@ -453,6 +454,64 @@ export function GarageModal({ customization, onChange, onClose }: GarageModalPro
                 presets={ACCENT_PRESETS}
                 pickerLabel="Colore Cerchioni Personalizzato"
                 onSelect={(hex) => onChange({ ...customization, wheelColor: hex })}
+              />
+            </>
+          )}
+
+          {activeTab === 'boost' && (
+            <>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-slate-300">
+                    Effetto Fumo &amp; Scia Turbo
+                  </span>
+                  <span className="text-[11px] text-sky-300 font-semibold">
+                    Vista scarichi live
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {BOOST_EFFECT_OPTIONS.map((fx) => {
+                    const selected = boostEffect === fx.id;
+                    return (
+                      <button
+                        key={fx.id}
+                        type="button"
+                        onClick={() => onChange({ ...customization, boostEffect: fx.id })}
+                        className={`w-full text-left p-2.5 rounded-lg border transition-colors flex items-center gap-3 cursor-pointer focus-visible:outline-2 focus-visible:outline-sky-400 ${
+                          selected
+                            ? 'bg-sky-500/20 border-sky-400 text-white'
+                            : 'bg-white/5 border-white/10 text-slate-200 hover:bg-white/10'
+                        }`}
+                      >
+                        <div
+                          className="w-11 h-9 rounded-md border border-white/25 shrink-0"
+                          style={{
+                            background: `linear-gradient(135deg, ${fx.swatchColors[0]} 0%, ${fx.swatchColors[1]} 52%, ${fx.swatchColors[2]} 100%)`,
+                          }}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-extrabold uppercase tracking-wide flex items-center justify-between gap-2">
+                            <span className="truncate">{fx.label}</span>
+                            {selected && (
+                              <span className="text-[10px] text-sky-300 shrink-0">ATTIVO</span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                            {fx.desc}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <SwatchRow
+                label="Colore Fumo &amp; Turbo"
+                value={customization.boostColor}
+                presets={BOOST_PRESETS}
+                pickerLabel="Colore Fumo & Turbo Personalizzato"
+                onSelect={(hex) => onChange({ ...customization, boostColor: hex })}
               />
             </>
           )}

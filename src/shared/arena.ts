@@ -6,8 +6,8 @@ export const ARENA_HALF_X = 62.0; // Total width = 124m
 export const ARENA_HALF_Z = 84.0; // Total length = 168m
 export const ARENA_HEIGHT = 26.0; // Ceiling height
 export const CORNER_CHAMFER = 12.0; // Compact corners leave longer flat walls
-export const RAMP_RADIUS = 4.0; // Floor-to-wall curve
-export const CEILING_RAMP_RADIUS = 3.0; // Tighter upper curve and a broad flat ceiling
+export const RAMP_RADIUS = 4.5; // Floor-to-wall curve
+export const CEILING_RAMP_RADIUS = 5.5; // Smooth upper curve so cars climb cleanly onto the ceiling
 export const GOAL_HALF_X = 11.5; // Goal width = 23m
 export const GOAL_HEIGHT = 7.8; // Goal height = 7.8m
 export const GOAL_DEPTH = 10.5; // Goal net depth

@@ -64,15 +64,18 @@ test('normalizeCarCustomization preserves legacy configs and sanitizes invalid v
   assert.equal(normalized.wheelColor, '#abcdef');
   assert.equal(normalized.windowTint, 'dark');
   assert.equal(normalized.trimStyle, 'carbon');
+  assert.equal(normalized.boostEffect, 'classic_flame');
 
   const corrupt = normalizeCarCustomization({
     body: 'unknown_car' as never,
     primaryColor: 'not-a-hex',
     spoiler: 'giant' as never,
+    boostEffect: 'nonexistent_fx' as never,
   });
   assert.equal(corrupt.body, DEFAULT_CUSTOMIZATION_BLUE.body);
   assert.equal(corrupt.primaryColor, DEFAULT_CUSTOMIZATION_BLUE.primaryColor);
   assert.equal(corrupt.spoiler, DEFAULT_CUSTOMIZATION_BLUE.spoiler);
+  assert.equal(corrupt.boostEffect, DEFAULT_CUSTOMIZATION_BLUE.boostEffect);
 });
 
 test('presets and randomizer always emit valid normalized configurations', () => {

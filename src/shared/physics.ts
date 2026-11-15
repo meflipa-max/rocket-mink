@@ -513,21 +513,21 @@ function stepCarsOnly(
         car.quat = normQuat(mulQuat(yawQ, car.quat));
       }
 
-      // Align car up vector smoothly with surface normal (ground, ramp, wall!)
+      // Align car up vector smoothly with surface normal (ground, ramp, wall, ceiling!)
       const newUp = normV3(rotateVecByQuat(v3(0, 1, 0), car.quat));
       const alignQ = quatFromUnitVectors(newUp, car.groundNormal);
       const targetQuat = normQuat(mulQuat(alignQ, car.quat));
-      car.quat = slerpQuat(car.quat, targetQuat, clamp(24 * dt, 0, 1));
+      car.quat = slerpQuat(car.quat, targetQuat, clamp(30 * dt, 0, 1));
 
       // Floor gravity vs curved ramp / vertical wall / ceiling wheel adhesion
-      const isCeiling = car.groundNormal.y < -0.25;
+      const isCeiling = car.groundNormal.y < -0.78;
       const isSteepWall = !isCeiling && car.groundNormal.y < 0.65;
       if (isCeiling) {
-        if (isBoosting && Math.abs(forwardSpeed) > 10.0) {
-          // Active boost at speed temporarily sustains inverted ceiling traction
-          const adhesion = 18.0 + Math.abs(forwardSpeed) * 0.6;
+        if (isBoosting && Math.abs(forwardSpeed) > 6.5) {
+          // Active boost at speed sustains inverted ceiling traction
+          const adhesion = 26.0 + Math.abs(forwardSpeed) * 0.95;
           car.vel = subV3(car.vel, scaleV3(car.groundNormal, adhesion * dt));
-          car.vel.y += GRAVITY * 0.6 * dt;
+          car.vel.y += GRAVITY * 0.45 * dt;
         } else {
           // Without active boost on the ceiling, gravity pulls the car down cleanly
           car.vel.y += GRAVITY * dt;
@@ -535,16 +535,16 @@ function stepCarsOnly(
             car.onGround = false;
           }
         }
-      } else if (car.groundNormal.y < 0.35 && Math.abs(forwardSpeed) < 7.0) {
+      } else if (car.groundNormal.y < 0.35 && Math.abs(forwardSpeed) < 6.0) {
         // Lose wall grip if too slow on a near-vertical wall -> detach smoothly
         car.onGround = false;
         car.vel.y += GRAVITY * dt;
       } else if (isSteepWall) {
-        // Strong tire downforce on curved ramps & walls (overcomes v^2/R centripetal lift)
-        const adhesion = 24.0 + Math.abs(forwardSpeed) * 2.4;
+        // Strong tire downforce on curved ramps & walls (carries smoothly onto ceiling curve)
+        const adhesion = 28.0 + Math.abs(forwardSpeed) * 2.8;
         car.vel = subV3(car.vel, scaleV3(car.groundNormal, adhesion * dt));
-        // Subtle gravity pull along wall so climbing slowly still feels weighty
-        car.vel.y += GRAVITY * 0.4 * dt;
+        // Subtle gravity pull along wall so climbing still feels weighty
+        car.vel.y += GRAVITY * 0.35 * dt;
       } else {
         // Flat floor & gentle ramps: full gravity keeps tires planted without bouncing
         car.vel.y += GRAVITY * dt;
@@ -620,7 +620,7 @@ function stepCarsOnly(
           );
 
           // Rocket League snap: flatten vertical drop cleanly when initiating dodge
-          car.vel.y = clamp(car.vel.y * 0.15, -0.6, 1.4);
+          car.vel.y = clamp(car.vel.y * 0.12, -0.8, 1.0);
           const dodgeSurge = isDiagonal ? 13.8 : 12.2;
           car.vel = addV3(car.vel, scaleV3(dodgeDir, dodgeSurge));
 
@@ -721,7 +721,7 @@ function stepCarsOnly(
         // Check if landing smoothly on wheels or driving onto curved ramp/wall
         const currentUp = rotateVecByQuat(v3(0, 1, 0), car.quat);
         const upDot = dotV3(currentUp, hit.normal);
-        if (hit.isFloorOrRamp && upDot > 0.18) {
+        if (hit.isFloorOrRamp && upDot > (car.onGround ? -0.15 : 0.08)) {
           // Snap smoothly onto surface without upward bounce
           car.vel = subV3(car.vel, scaleV3(hit.normal, vn));
           car.onGround = true;
@@ -745,9 +745,9 @@ function stepCarsOnly(
         car.groundNormal = { ...hit.normal };
       }
     } else if (car.onGround) {
-      // Probe below wheels (generous on floor/walls, tighter on ceiling so cars detach cleanly)
-      const onCeiling = car.groundNormal.y < -0.25;
-      const probeDist = onCeiling ? 0.32 : 0.75;
+      // Probe below wheels (generous on floor/walls, reliable on ceiling so cars don't micro-detach)
+      const onCeiling = car.groundNormal.y < -0.78;
+      const probeDist = onCeiling ? 0.55 : 0.80;
       const probePos = subV3(car.pos, scaleV3(car.groundNormal, probeDist));
       const probe = resolveArenaSphere(probePos, CAR_RIDE_HEIGHT);
       if (probe.hit && probe.isFloorOrRamp && !(onCeiling && dotV3(car.vel, probe.normal) > 0.6)) {

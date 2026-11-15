@@ -114,3 +114,23 @@ test('grounded forward hit drives the ball ahead with low loft instead of poppin
     assert.ok(state.ball.vel.z > state.ball.vel.y * 4, 'Forward velocity must dominate vertical pop');
   }
 });
+
+test('forward flip push drives the ball cleanly ahead without popping over the car', () => {
+  for (const ballY of [1.1, 2.0]) {
+    const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p', name: 'FlipStriker', team: 'blue' }]);
+    const car = state.cars[0];
+    car.pos = v3(0, 0.85, 0);
+    car.quat = quatFromYaw(0);
+    car.vel = v3(0, 0.5, 29);
+    car.onGround = false;
+    car.isFlipping = true;
+    state.ball.pos = v3(0, ballY, 2.85);
+    state.ball.vel = v3(0, 0, 8);
+
+    assert.ok(resolveBallContact(car, state.ball, MAX_BALL_SPEED));
+    assert.ok(state.ball.pos.z > car.pos.z + 2.5, `Ball stayed too close: ball.z=${state.ball.pos.z}, car.z=${car.pos.z}`);
+    assert.ok(state.ball.vel.z > car.vel.z + 3.5, `Ball must outpace flipping car: ball=${state.ball.vel.z}, car=${car.vel.z}`);
+    assert.ok(state.ball.vel.y <= 5.21 && state.ball.vel.y >= 0.4, `Unexpected flip lift: vel.y=${state.ball.vel.y}`);
+  }
+});
+

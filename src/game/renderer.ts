@@ -26,6 +26,12 @@ import { ParticlePool } from './particles';
 import { soundEngine } from './sound';
 import { buildSoccerBallMesh, buildStadium, type StadiumRig } from './stadium';
 import { animateGodModeCar, createGodModeItemVisual } from './godModeVisual';
+import { BODY_GEOMETRY_SPECS } from '../shared/customization';
+import {
+  computeExhaustPlumeTint,
+  getBoostEffectSpec,
+  sampleBoostParticleColor,
+} from '../shared/boostEffects';
 
 export type ViewportMode = 'title' | 'garage' | 'playing' | 'paused' | 'gameover';
 
@@ -110,6 +116,7 @@ export class GameViewportController {
   private garageRig: CarVisualRig | null = null;
   private garageCustomization: CarCustomization = { ...DEFAULT_CUSTOMIZATION_BLUE };
   private garageOrbit = 0.72;
+  private garageTargetOrbit: number | null = null;
   private garageZoom = 5.4;
   private garageDragX: number | null = null;
   private boomSprites: Array<{ sprite: THREE.Sprite; age: number }> = [];
@@ -262,7 +269,14 @@ export class GameViewportController {
     this.stadium.setArenaTheme(arenaId);
   }
 
+  public setGarageFocus(focus: 'front' | 'rear'): void {
+    this.garageTargetOrbit = focus === 'rear' ? -2.32 : 0.72;
+  }
+
   public setGaragePreview(customization: CarCustomization): void {
+    const effectChanged =
+      this.garageCustomization.boostEffect !== customization.boostEffect ||
+      this.garageCustomization.boostColor !== customization.boostColor;
     this.garageCustomization = { ...customization };
     if (this.garageRig) {
       this.scene.remove(this.garageRig.group);
@@ -279,6 +293,14 @@ export class GameViewportController {
     this.garageRig.contactShadow.visible = this.mode === 'garage';
     for (const cone of this.garageRig.flameCones) {
       cone.visible = this.mode === 'garage';
+    }
+    for (const cone of this.garageRig.innerFlameCones) {
+      cone.visible = this.mode === 'garage';
+    }
+    if (this.mode === 'garage' && effectChanged) {
+      this.particles.clear();
+      _v4.set(3.5, 0.56, 0);
+      this.emitBoostEffect(this.garageRig, _v4, _qIdentity, this.garageCustomization, 0.14, true, true);
     }
   }
 
@@ -297,11 +319,15 @@ export class GameViewportController {
       }
       this.ballRig.group.visible = true;
       this.ballRig.indicatorRing.visible = true;
+      this.particles.clear();
       this.spawnTitleShowcaseCars();
       soundEngine.updateContinuous(false, 0, false);
     } else if (mode === 'garage') {
       this.camera.up.set(0, 1, 0);
+      this.garageOrbit = 0.72;
+      this.garageTargetOrbit = null;
       this.clearCarRigs();
+      this.particles.clear();
       this.ballRig.group.visible = false;
       this.ballRig.indicatorRing.visible = false;
       this.setGaragePreview(this.garageCustomization);
@@ -311,6 +337,7 @@ export class GameViewportController {
         this.garageRig.group.visible = false;
         this.garageRig.contactShadow.visible = false;
       }
+      this.particles.clear();
       this.ballRig.group.visible = true;
       this.ballRig.indicatorRing.visible = true;
       if (mode !== 'playing') {
@@ -643,7 +670,10 @@ export class GameViewportController {
   };
 
   private handleMouseDown = (e: MouseEvent) => {
-    if (this.mode === 'garage' && e.button === 0 && e.target === this.renderer.domElement) this.garageDragX = e.clientX;
+    if (this.mode === 'garage' && e.button === 0 && e.target === this.renderer.domElement) {
+      this.garageDragX = e.clientX;
+      this.garageTargetOrbit = null;
+    }
     if (this.mode !== 'playing') return;
     if (e.target !== this.renderer.domElement) return;
     if (e.button === 0) {
@@ -792,29 +822,62 @@ export class GameViewportController {
       this.ballRig.group.rotation.y = this.elapsed * 0.6;
       this.ballRig.indicatorRing.position.set(0, 0.03, 0);
       this.stadium.update(this.elapsed, []);
-      this.particles.update(dt);
+      this.particles.update(dt, this.camera.quaternion);
       return;
     }
 
     if (this.mode === 'garage' && this.garageRig) {
+      if (this.garageTargetOrbit !== null) {
+        const diff = this.garageTargetOrbit - this.garageOrbit;
+        if (Math.abs(diff) < 0.008) {
+          this.garageOrbit = this.garageTargetOrbit;
+          this.garageTargetOrbit = null;
+        } else {
+          this.garageOrbit += diff * (1 - Math.exp(-8 * dt));
+        }
+      }
       const angle = this.garageOrbit;
+      const rearBlend = clamp((-angle - 0.6) / 1.4, 0, 1);
       const w = this.container.clientWidth;
       const h = this.container.clientHeight;
       const compact = w < 768;
-      const zoom = this.garageZoom * (compact ? 1.4 : 1);
-      this.camera.position.set(3.5 + Math.cos(angle) * zoom, 2.25, Math.sin(angle) * zoom);
-      this.camera.lookAt(3.5, 0.50, 0);
-      this.camera.setViewOffset(w, h, compact ? 0 : -w * 0.18, compact ? h * 0.27 : 0, w, h);
+      const zoom = this.garageZoom * (compact ? 1.42 : 1 + rearBlend * 0.16);
+      this.camera.position.set(
+        3.5 + Math.cos(angle) * zoom,
+        2.25 + rearBlend * 0.25,
+        Math.sin(angle) * zoom,
+      );
+      this.camera.lookAt(3.5, 0.50 + rearBlend * 0.12, -0.95 * rearBlend);
+      this.camera.setViewOffset(
+        w,
+        h,
+        compact ? 0 : -w * (0.18 - rearBlend * 0.02),
+        compact ? h * 0.27 : 0,
+        w,
+        h,
+      );
       this.camera.fov = compact ? 56 : 48;
       this.camera.updateProjectionMatrix();
       this.garageRig.group.rotation.y = 0;
-      const flamePulse = 0.6 + Math.sin(this.elapsed * 14) * 0.2;
+
+      const effectStyle = this.garageCustomization.boostEffect ?? 'classic_flame';
+      const plume = computeExhaustPlumeTint(effectStyle, this.garageCustomization.boostColor, this.elapsed);
+      this.garageRig.flameMat.color.set(plume.outerHex);
+      this.garageRig.innerFlameMat.color.set(plume.innerHex);
       for (const cone of this.garageRig.flameCones) {
         cone.visible = true;
-        cone.scale.set(0.85, 0.85, flamePulse);
+        cone.scale.set(0.88, 0.88, plume.pulseScale * 0.85);
       }
+      for (const cone of this.garageRig.innerFlameCones) {
+        cone.visible = true;
+        cone.scale.set(0.82, 0.82, plume.pulseScale * 0.8);
+      }
+
+      _v4.set(3.5, 0.56, 0);
+      this.emitBoostEffect(this.garageRig, _v4, _qIdentity, this.garageCustomization, dt, false, true);
+
       this.stadium.update(this.elapsed, []);
-      this.particles.update(dt);
+      this.particles.update(dt, this.camera.quaternion);
       return;
     }
 
@@ -953,9 +1016,22 @@ export class GameViewportController {
             rig.contactShadow.position.set(rCar.pos.x, 0.025, rCar.pos.z);
             rig.contactShadow.quaternion.identity();
           }
+          const replayCarState = this.activeState.cars.find((c) => c.id === rCar.id);
+          const rCust = replayCarState?.customization ?? DEFAULT_CUSTOMIZATION_BLUE;
+          const rStyle = rCust.boostEffect ?? 'classic_flame';
+          const rPlume = computeExhaustPlumeTint(rStyle, rCust.boostColor, this.elapsed);
+          rig.flameMat.color.set(rPlume.outerHex);
+          rig.innerFlameMat.color.set(rPlume.innerHex);
           for (const cone of rig.flameCones) {
             cone.visible = rCar.supersonic;
-            if (rCar.supersonic) cone.scale.set(1, 1, 0.9 + Math.random() * 0.45);
+            if (rCar.supersonic) cone.scale.set(1, 1, rPlume.pulseScale + Math.random() * 0.25);
+          }
+          for (const cone of rig.innerFlameCones) {
+            cone.visible = rCar.supersonic;
+            if (rCar.supersonic) cone.scale.set(1, 1, rPlume.pulseScale + Math.random() * 0.2);
+          }
+          if (rCar.supersonic) {
+            this.emitBoostEffect(rig, rig.group.position, rig.group.quaternion, rCust, dt, true, false);
           }
         }
 
@@ -1002,7 +1078,7 @@ export class GameViewportController {
         this.onGoalMarkers?.([]);
       }
       this.stadium.update(this.elapsed, this.activeState.boostPads);
-      this.particles.update(dt);
+      this.particles.update(dt, this.camera.quaternion);
       this.hudAccum += dt;
       if (this.hudAccum >= 1 / 15) {
         this.hudAccum = 0;
@@ -1124,11 +1200,18 @@ export class GameViewportController {
         );
       }
 
-      // Boost flame & particles
+      // Boost flame & multi-layer custom smoke/effect particles
       const isBoosting = godMode || (
         car.id === this.localPlayerId
           ? input.boost && car.boost > 0.2 && this.activeState.phase === 'active'
           : car.supersonic || (car.boost < 99 && Math.hypot(car.vel.x, car.vel.z) > 26));
+
+      const effectStyle = car.customization.boostEffect ?? 'classic_flame';
+      if (!godMode) {
+        const plume = computeExhaustPlumeTint(effectStyle, car.customization.boostColor, this.elapsed);
+        rig.flameMat.color.set(plume.outerHex);
+        rig.innerFlameMat.color.set(plume.innerHex);
+      }
 
       for (const cone of rig.flameCones) {
         cone.visible = isBoosting;
@@ -1137,22 +1220,16 @@ export class GameViewportController {
           cone.scale.set(car.supersonic ? 1.2 : 1, car.supersonic ? 1.2 : 1, surge + Math.random() * 0.25);
         }
       }
+      for (const cone of rig.innerFlameCones) {
+        cone.visible = isBoosting;
+        if (isBoosting) {
+          const surge = car.supersonic ? 1.45 : 0.78 + clamp(carSpeed / 31, 0, 1) * 0.35;
+          cone.scale.set(car.supersonic ? 1.15 : 1, car.supersonic ? 1.15 : 1, surge + Math.random() * 0.2);
+        }
+      }
 
-      if (isBoosting && Math.random() < 0.75) {
-        _v2.set(0, 0.15, -2.0).applyQuaternion(disp.quat).add(disp.pos);
-        _v3.set(0, 0, -8).applyQuaternion(disp.quat);
-        this.particles.spawn(
-          _v2.x + (Math.random() - 0.5) * 0.35,
-          _v2.y + (Math.random() - 0.5) * 0.25,
-          _v2.z + (Math.random() - 0.5) * 0.35,
-          _v3.x,
-          _v3.y + 1.5,
-          _v3.z,
-          car.customization.boostColor,
-          0.95,
-          0.05,
-          0.26,
-        );
+      if (isBoosting) {
+        this.emitBoostEffect(rig, disp.pos, disp.quat, car.customization, dt, car.supersonic, false);
       }
 
       // Project remote car nameplates
@@ -1256,7 +1333,7 @@ export class GameViewportController {
     }
 
     this.stadium.update(this.elapsed, this.activeState.boostPads);
-    this.particles.update(dt);
+    this.particles.update(dt, this.camera.quaternion);
 
     // Throttle React HUD updates to <= 15Hz (only discrete/telemetry refresh)
     this.hudAccum += dt;
@@ -1303,6 +1380,150 @@ export class GameViewportController {
       offscreen: behind || Math.abs(x) > 0.85 || Math.abs(y) > 0.75,
       angle: Math.atan2(-y, x) * 180 / Math.PI,
     };
+  }
+
+  private emitBoostEffect(
+    _rig: CarVisualRig,
+    pos: THREE.Vector3,
+    quat: THREE.Quaternion,
+    customization: CarCustomization,
+    dt: number,
+    isSupersonic: boolean,
+    isGarage: boolean,
+  ): void {
+    const style = customization.boostEffect ?? 'classic_flame';
+    const spec = getBoostEffectSpec(style);
+    const bodySpec = BODY_GEOMETRY_SPECS[customization.body] ?? BODY_GEOMETRY_SPECS.octane;
+    const ports = bodySpec.exhausts;
+    const portScale = 1 / Math.max(1, ports.length * 0.72);
+    const boostMult = isGarage ? 0.95 : isSupersonic ? 1.35 : 1.0;
+    const exhaustSpeed = isGarage ? 8.8 : isSupersonic ? 11.8 : 9.5;
+
+    // Backwards exhaust axis in world space
+    _v3.set(0, 0, -1).applyQuaternion(quat).normalize();
+
+    const spawnProb = (rate: number) => rate * dt * portScale * boostMult;
+    const sampleCount = (rate: number) => {
+      const expected = spawnProb(rate);
+      const whole = Math.floor(expected);
+      return whole + (Math.random() < expected - whole ? 1 : 0);
+    };
+
+    for (let p = 0; p < ports.length; p++) {
+      const port = ports[p];
+      _v2.set(port.x, port.y, port.z - 0.18).applyQuaternion(quat).add(pos);
+
+      // 1. Volumetric Smoke / Mist / Nebula Layer
+      const smokeCount = sampleCount(spec.smokeRate);
+      for (let i = 0; i < smokeCount; i++) {
+        const spread = spec.smokeSpread * (isGarage ? 0.82 : 1.0);
+        const col = sampleBoostParticleColor(style, customization.boostColor, 'smoke', this.elapsed, Math.random());
+        this.particles.spawnAdvanced({
+          layer: 'smoke',
+          x: _v2.x + (Math.random() - 0.5) * 0.24,
+          y: _v2.y + (Math.random() - 0.5) * 0.20,
+          z: _v2.z + (Math.random() - 0.5) * 0.24,
+          vx: _v3.x * exhaustSpeed * (0.68 + Math.random() * 0.45) + (Math.random() - 0.5) * spread,
+          vy: _v3.y * exhaustSpeed * 0.8 + (Math.random() - 0.5) * spread * 0.7 + (style === 'classic_flame' ? 0.8 : 0),
+          vz: _v3.z * exhaustSpeed * (0.68 + Math.random() * 0.45) + (Math.random() - 0.5) * spread,
+          colorHex: col,
+          startScale: spec.smokeStartScale * (0.85 + Math.random() * 0.35),
+          endScale: spec.smokeEndScale * (0.85 + Math.random() * 0.4),
+          maxAge: spec.smokeLife * (0.8 + Math.random() * 0.4),
+          maxAlpha: spec.smokeMaxAlpha,
+          gravity: spec.smokeGravity,
+          drag: spec.smokeDrag,
+          swirl: spec.swirlStrength,
+          swirlAxisX: _v3.x,
+          swirlAxisY: _v3.y,
+          swirlAxisZ: _v3.z,
+          spinSpeed: (Math.random() - 0.5) * 3.5,
+        });
+      }
+
+      // 2. Additive Starflare / Plasma Glow Layer
+      const glowCount = sampleCount(spec.glowRate);
+      for (let i = 0; i < glowCount; i++) {
+        const col = sampleBoostParticleColor(style, customization.boostColor, 'glow', this.elapsed, Math.random());
+        const sp = spec.smokeSpread * 0.55;
+        this.particles.spawnAdvanced({
+          layer: 'glow',
+          x: _v2.x + (Math.random() - 0.5) * 0.20,
+          y: _v2.y + (Math.random() - 0.5) * 0.16,
+          z: _v2.z + (Math.random() - 0.5) * 0.20,
+          vx: _v3.x * exhaustSpeed * (0.85 + Math.random() * 0.45) + (Math.random() - 0.5) * sp,
+          vy: _v3.y * exhaustSpeed + (Math.random() - 0.5) * sp,
+          vz: _v3.z * exhaustSpeed * (0.85 + Math.random() * 0.45) + (Math.random() - 0.5) * sp,
+          colorHex: col,
+          startScale: spec.glowStartScale * (0.75 + Math.random() * 0.5),
+          endScale: spec.glowEndScale,
+          maxAge: spec.glowLife * (0.75 + Math.random() * 0.5),
+          maxAlpha: spec.glowMaxAlpha,
+          gravity: style === 'frost_blizzard' ? 0.6 : -0.6,
+          drag: 1.6,
+          swirl: spec.swirlStrength * 0.6,
+          swirlAxisX: _v3.x,
+          swirlAxisY: _v3.y,
+          swirlAxisZ: _v3.z,
+        });
+      }
+
+      // 3. 3D Fresnel Energy Rings (Cyber Pulse, Prisma Astrale, Vuoto Cosmico)
+      if (spec.ringRate > 0) {
+        const ringCount = sampleCount(spec.ringRate);
+        for (let i = 0; i < ringCount; i++) {
+          const col = sampleBoostParticleColor(style, customization.boostColor, 'ring', this.elapsed, Math.random());
+          this.particles.spawnAdvanced({
+            layer: 'ring',
+            x: _v2.x,
+            y: _v2.y,
+            z: _v2.z,
+            vx: _v3.x * exhaustSpeed * 0.9,
+            vy: _v3.y * exhaustSpeed * 0.9,
+            vz: _v3.z * exhaustSpeed * 0.9,
+            colorHex: col,
+            startScale: spec.ringStartScale,
+            endScale: spec.ringEndScale,
+            maxAge: spec.ringLife,
+            maxAlpha: 0.92,
+            gravity: 0,
+            drag: 1.8,
+            quat,
+            spinSpeed: style === 'black_hole' ? 8 : 2.5,
+          });
+        }
+      }
+
+      // 4. 3D Faceted Shards / Ice Crystals / Embers
+      if (spec.shardRate > 0) {
+        const shardCount = sampleCount(spec.shardRate);
+        for (let i = 0; i < shardCount; i++) {
+          const col = sampleBoostParticleColor(style, customization.boostColor, 'shard', this.elapsed, Math.random());
+          const sp = spec.smokeSpread * 1.15;
+          this.particles.spawnAdvanced({
+            layer: 'shard',
+            x: _v2.x + (Math.random() - 0.5) * 0.25,
+            y: _v2.y + (Math.random() - 0.5) * 0.22,
+            z: _v2.z + (Math.random() - 0.5) * 0.25,
+            vx: _v3.x * exhaustSpeed * (0.7 + Math.random() * 0.55) + (Math.random() - 0.5) * sp,
+            vy: _v3.y * exhaustSpeed * 0.8 + (Math.random() - 0.5) * sp + (style === 'classic_flame' ? 1.5 : 0),
+            vz: _v3.z * exhaustSpeed * (0.7 + Math.random() * 0.55) + (Math.random() - 0.5) * sp,
+            colorHex: col,
+            startScale: spec.shardScale * (0.7 + Math.random() * 0.65),
+            endScale: 0.03,
+            maxAge: spec.shardLife * (0.75 + Math.random() * 0.5),
+            maxAlpha: 0.95,
+            gravity: style === 'frost_blizzard' ? 2.4 : style === 'classic_flame' ? 3.5 : 0.4,
+            drag: 1.4,
+            swirl: spec.swirlStrength,
+            swirlAxisX: _v3.x,
+            swirlAxisY: _v3.y,
+            swirlAxisZ: _v3.z,
+            spinSpeed: (Math.random() - 0.5) * 14,
+          });
+        }
+      }
+    }
   }
 
   private rotateBall(omega: { x: number; y: number; z: number }, dt: number): void {

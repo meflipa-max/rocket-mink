@@ -14,9 +14,11 @@ export interface CarVisualRig {
   wheelPivots: THREE.Group[]; // [FL, FR, RL, RR]
   wheelMeshes: THREE.Group[];
   flameCones: THREE.Mesh[];
+  innerFlameCones: THREE.Mesh[];
   primaryMat: THREE.MeshPhysicalMaterial;
   accentMat: THREE.MeshStandardMaterial;
   flameMat: THREE.MeshBasicMaterial;
+  innerFlameMat: THREE.MeshBasicMaterial;
   contactShadow: THREE.Mesh;
   dispose: () => void;
 }
@@ -1026,26 +1028,37 @@ export function buildCarVisualRig(
     }
   }
 
-  // --- Body-Specific Rocket Thruster Nozzles & Boost Flame Cones ---
+  // --- Body-Specific Rocket Thruster Nozzles & Dual-Layer Boost Flame Cones ---
   const flameMat = new THREE.MeshBasicMaterial({
     color: new THREE.Color(customization.boostColor),
+    transparent: true,
+    opacity: 0.78,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const innerFlameMat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color('#fff7ed'),
     transparent: true,
     opacity: 0.92,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
   });
-  disposableMats.push(flameMat);
+  disposableMats.push(flameMat, innerFlameMat);
 
   const flameCones: THREE.Mesh[] = [];
+  const innerFlameCones: THREE.Mesh[] = [];
   for (const port of spec.exhausts) {
     const nozzleGeo = new THREE.CylinderGeometry(port.radius * 0.88, port.radius * 1.12, 0.34, 14);
     nozzleGeo.rotateX(Math.PI / 2);
     const coreGeo = new THREE.CylinderGeometry(port.radius * 0.72, port.radius * 0.78, 0.355, 14);
     coreGeo.rotateX(Math.PI / 2);
-    const flameGeo = new THREE.ConeGeometry(port.radius * 1.05, 1.72, 12);
+    const flameGeo = new THREE.ConeGeometry(port.radius * 1.15, 1.85, 14);
     flameGeo.rotateX(-Math.PI / 2);
-    flameGeo.translate(0, 0, -0.86);
-    disposableGeos.push(nozzleGeo, coreGeo, flameGeo);
+    flameGeo.translate(0, 0, -0.92);
+    const innerFlameGeo = new THREE.ConeGeometry(port.radius * 0.58, 1.15, 12);
+    innerFlameGeo.rotateX(-Math.PI / 2);
+    innerFlameGeo.translate(0, 0, -0.58);
+    disposableGeos.push(nozzleGeo, coreGeo, flameGeo, innerFlameGeo);
 
     const nozzle = new THREE.Mesh(nozzleGeo, chromeMat);
     nozzle.position.set(port.x, port.y, port.z);
@@ -1060,6 +1073,12 @@ export function buildCarVisualRig(
     flame.visible = false;
     bodyGroup.add(flame);
     flameCones.push(flame);
+
+    const innerFlame = new THREE.Mesh(innerFlameGeo, innerFlameMat);
+    innerFlame.position.set(port.x, port.y, port.z - 0.11);
+    innerFlame.visible = false;
+    bodyGroup.add(innerFlame);
+    innerFlameCones.push(innerFlame);
   }
 
   // --- 4 Articulated Wheels (Front/Rear Staggered Sizes + Brake Calipers + 6 Rim Styles) ---
@@ -1235,9 +1254,11 @@ export function buildCarVisualRig(
     wheelPivots,
     wheelMeshes,
     flameCones,
+    innerFlameCones,
     primaryMat,
     accentMat,
     flameMat,
+    innerFlameMat,
     contactShadow,
     dispose,
   };

@@ -597,4 +597,54 @@ test('driving forward into a grounded ball keeps the ball ahead instead of passi
   }
 });
 
+test('double-jump forward flip keeps pushing the ball ahead instead of passing over it', () => {
+  const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'Flipper', team: 'blue' }]);
+  const car = state.cars[0];
+  car.pos = v3(0, CAR_RIDE_HEIGHT, -20);
+  car.quat = quatFromYaw(0);
+  car.vel = v3(0, 0, 18);
+  car.boost = 100;
+  state.ball.pos = v3(0, BALL_RADIUS, -9);
+  state.ball.vel = v3();
+
+  // First jump while driving toward the ball
+  stepSimulation(state, { p1: { ...NEUTRAL_INPUT, throttle: 1, jump: true } }, 1 / 60);
+  for (let i = 0; i < 4; i++) {
+    stepSimulation(state, { p1: { ...NEUTRAL_INPUT, throttle: 1 } }, 1 / 60);
+  }
+  // Second jump forward flip
+  stepSimulation(state, { p1: { ...NEUTRAL_INPUT, throttle: 1, jump: true } }, 1 / 60);
+
+  let passedOver = false;
+  for (let i = 0; i < 45; i++) {
+    stepSimulation(state, { p1: { ...NEUTRAL_INPUT, throttle: 1 } }, 1 / 60);
+    if (car.pos.z > state.ball.pos.z + 0.25 || (state.ball.pos.z < car.pos.z + 0.5 && state.ball.pos.y > car.pos.y + 2.2)) {
+      passedOver = true;
+    }
+  }
+  assert.equal(passedOver, false, `Car/ball crossed vertically during forward flip: car=${JSON.stringify(car.pos)}, ball=${JSON.stringify(state.ball.pos)}`);
+  assert.ok(state.ball.pos.z > car.pos.z + 1.0, 'Ball must remain ahead of the flipping car');
+});
+
+test('driving up the wall smoothly reaches the ceiling curve without bouncing off', () => {
+  const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'WallClimber', team: 'blue' }]);
+  const car = state.cars[0];
+  car.pos = v3(22, CAR_RIDE_HEIGHT, 0);
+  car.quat = quatFromYaw(Math.PI / 2);
+  car.vel = v3(20, 0, 0);
+  car.boost = 35;
+
+  let reachedCeilingTransition = false;
+  for (let i = 0; i < 180; i++) {
+    const useBoost = i < 70 && car.boost > 0;
+    stepSimulation(state, { p1: { ...NEUTRAL_INPUT, throttle: 1, boost: useBoost } }, 1 / 60);
+    if (car.onGround && car.groundNormal.y < -0.5) {
+      reachedCeilingTransition = true;
+      break;
+    }
+  }
+  assert.equal(reachedCeilingTransition, true, `Car failed to climb smoothly onto ceiling curve: pos=${JSON.stringify(car.pos)}, normal=${JSON.stringify(car.groundNormal)}, onGround=${car.onGround}`);
+});
+
+
 

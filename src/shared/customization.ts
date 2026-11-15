@@ -1,4 +1,5 @@
 import type {
+  BoostEffectStyle,
   CarBodyStyle,
   CarCustomization,
   DecalStyle,
@@ -11,6 +12,9 @@ import type {
 } from './types';
 import { DEFAULT_CUSTOMIZATION_BLUE } from './types';
 import { CAR_RIDE_HEIGHT } from './arena';
+import { BOOST_EFFECT_OPTIONS, isValidBoostEffect } from './boostEffects';
+
+export { BOOST_EFFECT_OPTIONS };
 
 export interface ExhaustPortSpec {
   x: number;
@@ -311,6 +315,7 @@ export const GARAGE_PRESETS: GaragePreset[] = [
       primaryColor: '#dc2626',
       accentColor: '#f8fafc',
       boostColor: '#fbbf24',
+      boostEffect: 'classic_flame',
       decal: 'checkers',
       wheelStyle: 'aero',
       paintFinish: 'gloss',
@@ -331,6 +336,7 @@ export const GARAGE_PRESETS: GaragePreset[] = [
       primaryColor: '#0f172a',
       accentColor: '#22d3ee',
       boostColor: '#22d3ee',
+      boostEffect: 'neon_cyber',
       decal: 'lightning',
       wheelStyle: 'cyber',
       paintFinish: 'pearlescent',
@@ -350,7 +356,8 @@ export const GARAGE_PRESETS: GaragePreset[] = [
       body: 'titan',
       primaryColor: '#ca8a04',
       accentColor: '#1e293b',
-      boostColor: '#f97316',
+      boostColor: '#38bdf8',
+      boostEffect: 'frost_blizzard',
       decal: 'carbon_fade',
       wheelStyle: 'offroad',
       paintFinish: 'matte',
@@ -371,6 +378,7 @@ export const GARAGE_PRESETS: GaragePreset[] = [
       primaryColor: '#7c3aed',
       accentColor: '#fbbf24',
       boostColor: '#c084fc',
+      boostEffect: 'black_hole',
       decal: 'flames',
       wheelStyle: 'star',
       paintFinish: 'chrome',
@@ -387,10 +395,10 @@ export const GARAGE_PRESETS: GaragePreset[] = [
 ];
 
 export const BOT_CUSTOMIZATIONS_BLUE: CarCustomization[] = [
-  { ...DEFAULT_CUSTOMIZATION_BLUE, body: 'fennec', decal: 'checkers', wheelStyle: 'aero', spoiler: 'sport' },
-  { ...DEFAULT_CUSTOMIZATION_BLUE, body: 'apex', primaryColor: '#0284c7', accentColor: '#f8fafc', decal: 'lightning', wheelStyle: 'cyber', paintFinish: 'pearlescent', underglow: true },
-  { ...DEFAULT_CUSTOMIZATION_BLUE, body: 'formula', primaryColor: '#1e40af', accentColor: '#38bdf8', decal: 'stripes', wheelStyle: 'aero', spoiler: 'gt_wing', paintFinish: 'gloss' },
-  { ...DEFAULT_CUSTOMIZATION_BLUE, body: 'titan', primaryColor: '#0f766e', accentColor: '#99f6e4', decal: 'carbon_fade', wheelStyle: 'offroad', spoiler: 'none', paintFinish: 'matte' },
+  { ...DEFAULT_CUSTOMIZATION_BLUE, body: 'fennec', decal: 'checkers', wheelStyle: 'aero', spoiler: 'sport', boostEffect: 'frost_blizzard' },
+  { ...DEFAULT_CUSTOMIZATION_BLUE, body: 'apex', primaryColor: '#0284c7', accentColor: '#f8fafc', decal: 'lightning', wheelStyle: 'cyber', paintFinish: 'pearlescent', underglow: true, boostEffect: 'neon_cyber' },
+  { ...DEFAULT_CUSTOMIZATION_BLUE, body: 'formula', primaryColor: '#1e40af', accentColor: '#38bdf8', decal: 'stripes', wheelStyle: 'aero', spoiler: 'gt_wing', paintFinish: 'gloss', boostEffect: 'rainbow_prism' },
+  { ...DEFAULT_CUSTOMIZATION_BLUE, body: 'titan', primaryColor: '#0f766e', accentColor: '#99f6e4', decal: 'carbon_fade', wheelStyle: 'offroad', spoiler: 'none', paintFinish: 'matte', boostEffect: 'classic_flame' },
 ];
 
 export const BOT_CUSTOMIZATIONS_ORANGE: CarCustomization[] = [
@@ -399,6 +407,7 @@ export const BOT_CUSTOMIZATIONS_ORANGE: CarCustomization[] = [
     primaryColor: '#ea580c',
     accentColor: '#fbbf24',
     boostColor: '#f97316',
+    boostEffect: 'classic_flame',
     decal: 'flames',
     wheelStyle: 'star',
     paintFinish: 'metallic',
@@ -416,6 +425,7 @@ export const BOT_CUSTOMIZATIONS_ORANGE: CarCustomization[] = [
     primaryColor: '#dc2626',
     accentColor: '#f8fafc',
     boostColor: '#facc15',
+    boostEffect: 'rainbow_prism',
     decal: 'checkers',
     wheelStyle: 'turbine',
     paintFinish: 'gloss',
@@ -433,6 +443,7 @@ export const BOT_CUSTOMIZATIONS_ORANGE: CarCustomization[] = [
     primaryColor: '#b45309',
     accentColor: '#fde047',
     boostColor: '#fb923c',
+    boostEffect: 'frost_blizzard',
     decal: 'wings',
     wheelStyle: 'offroad',
     paintFinish: 'matte',
@@ -449,7 +460,8 @@ export const BOT_CUSTOMIZATIONS_ORANGE: CarCustomization[] = [
     body: 'apex',
     primaryColor: '#be123c',
     accentColor: '#fb7185',
-    boostColor: '#f43f5e',
+    boostColor: '#c084fc',
+    boostEffect: 'black_hole',
     decal: 'cyber',
     wheelStyle: 'cyber',
     paintFinish: 'anodized',
@@ -491,6 +503,9 @@ export function normalizeCarCustomization(
     primaryColor: validHex(src.primaryColor, fallback.primaryColor),
     accentColor: accent,
     boostColor: validHex(src.boostColor, fallback.boostColor),
+    boostEffect: isValidBoostEffect(src.boostEffect)
+      ? (src.boostEffect as BoostEffectStyle)
+      : (fallback.boostEffect ?? 'classic_flame'),
     decal: VALID_DECALS.has(String(src.decal)) ? (src.decal as DecalStyle) : fallback.decal,
     wheelStyle: VALID_WHEELS.has(String(src.wheelStyle))
       ? (src.wheelStyle as WheelStyle)
@@ -535,6 +550,7 @@ export function randomizeCarCustomization(rng: () => number = Math.random): CarC
     primaryColor: primary,
     accentColor: accent,
     boostColor: boost,
+    boostEffect: pick(BOOST_EFFECT_OPTIONS).id,
     decal: pick(DECAL_OPTIONS).id,
     wheelStyle,
     paintFinish: pick(PAINT_FINISH_OPTIONS).id,

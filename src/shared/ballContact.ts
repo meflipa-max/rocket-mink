@@ -30,9 +30,27 @@ export function resolveBallContact(car: CarState, ball: BallState, maxBallSpeed:
       localNormal = normV3(v3(difference.x, hitDiffY, difference.z));
     }
   }
-  const normal = normV3(rotateVecByQuat(localNormal, car.quat));
+  let normal = normV3(rotateVecByQuat(localNormal, car.quat));
+
+  // When pushing the ball during a dodge/flip, prevent steep vertical loft (passing over the car)
+  // or downward slams into the turf (bouncing behind/over while the car flies over the ball).
+  const toBallHoriz = v3(ball.pos.x - car.pos.x, 0, ball.pos.z - car.pos.z);
+  const toBallHorizLen = Math.hypot(toBallHoriz.x, toBallHoriz.z);
+  const carHorizSpeed = Math.hypot(car.vel.x, car.vel.z);
+  let flipPushDrive = false;
+  if (car.isFlipping && toBallHorizLen > 0.15 && carHorizSpeed > 3.5) {
+    const pushDir = scaleV3(toBallHoriz, 1 / toBallHorizLen);
+    const velHorizDir = scaleV3(v3(car.vel.x, 0, car.vel.z), 1 / carHorizSpeed);
+    if (dotV3(pushDir, velHorizDir) > 0.15 && ball.pos.y < 4.5) {
+      flipPushDrive = true;
+      const clampedY = clamp(normal.y, 0.06, 0.22);
+      const horizScale = Math.sqrt(Math.max(0.01, 1 - clampedY * clampedY));
+      normal = normV3(v3(pushDir.x * horizScale, clampedY, pushDir.z * horizScale));
+    }
+  }
+
   const contactArm = rotateVecByQuat(closest, car.quat);
-  ball.pos = addV3(ball.pos, scaleV3(normal, penetration + 0.02));
+  ball.pos = addV3(ball.pos, scaleV3(normal, penetration + (flipPushDrive ? 0.12 : 0.02)));
   // The chassis contact point (not the ball center) determines a rotating bumper's speed.
   let rotationalVelocity = crossV3(car.angVel, contactArm);
   rotationalVelocity = scaleV3(rotationalVelocity, Math.min(1, 8 / Math.max(lenV3(rotationalVelocity), 1e-6)));
@@ -57,8 +75,32 @@ export function resolveBallContact(car: CarState, ball: BallState, maxBallSpeed:
     car.vel = subV3(car.vel, scaleV3(frictionImpulse, carInverseMass));
     ball.angVel = addV3(ball.angVel, scaleV3(crossV3(ballArm, frictionImpulse), 2.5 / (ball.radius ** 2)));
   }
+
+  // On a flip push, keep the ball cleanly ahead of the car rather than overtaking it in mid-flip.
+  if (flipPushDrive) {
+    const pushDir = scaleV3(toBallHoriz, 1 / toBallHorizLen);
+    const carPushSpeed = dotV3(car.vel, pushDir);
+    const ballPushSpeed = dotV3(ball.vel, pushDir);
+    const targetBallPush = Math.min(maxBallSpeed * 0.98, Math.max(ballPushSpeed, carPushSpeed + 4.5));
+    if (targetBallPush > ballPushSpeed) {
+      ball.vel = addV3(ball.vel, scaleV3(pushDir, targetBallPush - ballPushSpeed));
+    }
+    ball.vel.y = clamp(ball.vel.y, 0.4, 5.2);
+  }
+
   const speed = lenV3(ball.vel);
   if (speed > maxBallSpeed) ball.vel = scaleV3(ball.vel, maxBallSpeed / speed);
+
+  if (flipPushDrive) {
+    const pushDir = scaleV3(toBallHoriz, 1 / toBallHorizLen);
+    const finalBallPush = dotV3(ball.vel, pushDir);
+    const carPushSpeed = dotV3(car.vel, pushDir);
+    if (carPushSpeed > finalBallPush - 3.8) {
+      const trim = carPushSpeed - Math.max(0, finalBallPush - 3.8);
+      car.vel = subV3(car.vel, scaleV3(pushDir, trim));
+    }
+  }
+
   const spin = lenV3(ball.angVel);
   if (spin > 40) ball.angVel = scaleV3(ball.angVel, 40 / spin);
   return true;
