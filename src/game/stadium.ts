@@ -3,6 +3,7 @@ import {
   ARENA_HALF_X,
   ARENA_HALF_Z,
   ARENA_HEIGHT,
+  BALL_RADIUS,
   CEILING_RAMP_RADIUS,
   CORNER_CHAMFER,
   GOAL_DEPTH,
@@ -37,7 +38,7 @@ function createPitchTexture(arenaId: ArenaId): THREE.CanvasTexture {
   const isNeo = arenaId === 'neo_tokyo';
 
   // Alternating mowed grass stripes
-  const stripeCount = 14;
+  const stripeCount = 20;
   const stripeH = canvas.height / stripeCount;
   for (let i = 0; i < stripeCount; i++) {
     if (isNeo) {
@@ -165,7 +166,7 @@ function createWallGridTexture(): THREE.CanvasTexture {
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(16, 4);
+  tex.repeat.set(26, 7);
   return tex;
 }
 
@@ -186,7 +187,7 @@ function createTurfDetail(): THREE.CanvasTexture {
   }
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(80, 108);
+  tex.repeat.set(130, 165);
   tex.anisotropy = 8;
   return tex;
 }
@@ -239,7 +240,7 @@ export function buildSoccerBallMesh(isSoftwareGl: boolean): {
 } {
   const group = new THREE.Group();
   const ballTex = createSoccerBallTexture();
-  const sphereGeo = new THREE.SphereGeometry(1.65, 28, 22);
+  const sphereGeo = new THREE.SphereGeometry(BALL_RADIUS, 28, 22);
   const ballMat = new THREE.MeshPhysicalMaterial({
     map: ballTex,
     roughness: 0.28,
@@ -252,13 +253,13 @@ export function buildSoccerBallMesh(isSoftwareGl: boolean): {
   mesh.receiveShadow = !isSoftwareGl;
   group.add(mesh);
 
-  // Glowing ground projection ring directly beneath ball on turf
-  const ringGeo = new THREE.RingGeometry(1.3, 1.7, 32);
+  // Glowing ground projection ring directly beneath ball on turf (Rocket League ball circle)
+  const ringGeo = new THREE.RingGeometry(BALL_RADIUS * 0.78, BALL_RADIUS * 1.03, 36);
   ringGeo.rotateX(-Math.PI / 2);
   const ringMat = new THREE.MeshBasicMaterial({
     color: 0xffffff,
     transparent: true,
-    opacity: 0.6,
+    opacity: 0.65,
     depthWrite: false,
   });
   const indicatorRing = new THREE.Mesh(ringGeo, ringMat);
@@ -286,7 +287,7 @@ export function buildStadium(
   const disposables: Array<{ dispose: () => void }> = [];
 
   // A real sky dome gives the horizon depth without external textures or requests.
-  const skyGeo = new THREE.SphereGeometry(360, 40, 24);
+  const skyGeo = new THREE.SphereGeometry(700, 40, 24);
   const skyMat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
@@ -331,27 +332,27 @@ export function buildStadium(
   group.add(hemiLight);
 
   const keyLight = new THREE.DirectionalLight(0xfff1d6, 1.85);
-  keyLight.position.set(48, 76, 38);
+  keyLight.position.set(78, 125, 62);
   keyLight.castShadow = !isSoftwareGl;
   if (!isSoftwareGl) {
     keyLight.shadow.mapSize.set(1024, 1024);
-    keyLight.shadow.camera.left = -98;
-    keyLight.shadow.camera.right = 98;
-    keyLight.shadow.camera.top = 98;
-    keyLight.shadow.camera.bottom = -98;
+    keyLight.shadow.camera.left = -155;
+    keyLight.shadow.camera.right = 155;
+    keyLight.shadow.camera.top = 155;
+    keyLight.shadow.camera.bottom = -155;
     keyLight.shadow.camera.near = 10;
-    keyLight.shadow.camera.far = 220;
+    keyLight.shadow.camera.far = 360;
     keyLight.shadow.bias = -0.0005;
     keyLight.shadow.normalBias = 0.02;
   }
   group.add(keyLight);
 
   const rimLight = new THREE.DirectionalLight(0x38bdf8, 0.65);
-  rimLight.position.set(-55, 42, -75);
+  rimLight.position.set(-85, 64, -110);
   group.add(rimLight);
 
   // Extended surrounding stadium apron (never floating in a void!)
-  const apronGeo = new THREE.PlaneGeometry(580, 580);
+  const apronGeo = new THREE.PlaneGeometry(1200, 1200);
   apronGeo.rotateX(-Math.PI / 2);
   const apronMat = new THREE.MeshStandardMaterial({
     color: 0x0b1220,
@@ -562,7 +563,7 @@ export function buildStadium(
   }
   ceilingUV.needsUpdate = true;
   const ceilingTex = wallTex.clone();
-  ceilingTex.repeat.set(16, 20);
+  ceilingTex.repeat.set(26, 32);
   ceilingTex.needsUpdate = true;
   const ceilingMat = new THREE.MeshBasicMaterial({
     color: 0x92d9ff, map: ceilingTex, transparent: true, opacity: 0.55,
@@ -637,22 +638,22 @@ export function buildStadium(
     group.add(crossbar);
 
     // Tall glowing flank beacon pillars outside the posts (visible from anywhere on pitch)
-    const beaconGeo = new THREE.BoxGeometry(0.9, GOAL_HEIGHT * 1.85, 0.9);
-    for (const bx of [-(GOAL_HALF_X + 1.4), GOAL_HALF_X + 1.4]) {
+    const beaconGeo = new THREE.BoxGeometry(1.3, GOAL_HEIGHT * 1.65, 1.3);
+    for (const bx of [-(GOAL_HALF_X + 1.8), GOAL_HALF_X + 1.8]) {
       const beacon = new THREE.Mesh(beaconGeo, glowMat);
-      beacon.position.set(bx, (GOAL_HEIGHT * 1.85) / 2, zLine - zDir * 0.25);
+      beacon.position.set(bx, (GOAL_HEIGHT * 1.65) / 2, zLine - zDir * 0.25);
       group.add(beacon);
     }
 
     // Large 3D Overhead Goal Signboard ("PORTA BLU" / "PORTA ARANCIONE")
     const signTex = createGoalSignTexture(signTitle, signBgHex, signBorderHex);
-    const signGeo = new THREE.PlaneGeometry(16, 4);
+    const signGeo = new THREE.PlaneGeometry(24, 6);
     const signMat = new THREE.MeshBasicMaterial({
       map: signTex,
       side: THREE.DoubleSide,
     });
     const signMesh = new THREE.Mesh(signGeo, signMat);
-    signMesh.position.set(0, GOAL_HEIGHT + 3.4, zLine - zDir * 0.3);
+    signMesh.position.set(0, GOAL_HEIGHT + 4.8, zLine - zDir * 0.3);
     if (zDir === -1) {
       signMesh.rotation.y = 0;
     } else {
@@ -723,9 +724,9 @@ export function buildStadium(
     metalness: 0.75,
     roughness: 0.3,
   });
-  const archGeo = new THREE.TorusGeometry(ARENA_HALF_X + 10, 0.85, 8, 36, Math.PI);
+  const archGeo = new THREE.TorusGeometry(ARENA_HALF_X + 14, 1.35, 8, 40, Math.PI);
   disposables.push(archMat, archGeo);
-  for (const az of [-50, 0, 50]) {
+  for (const az of [-80, 0, 80]) {
     const arch = new THREE.Mesh(archGeo, archMat);
     arch.position.set(0, 0, az);
     group.add(arch);
@@ -771,44 +772,47 @@ export function buildStadium(
   }
 
   // Exterior City Skyline Silhouettes framing the larger stadium horizon
-  const skylineGeo = new THREE.BoxGeometry(14, 42, 14);
+  const skylineGeo = new THREE.BoxGeometry(22, 56, 22);
   const skylineMat = new THREE.MeshStandardMaterial({
     color: 0x0f172a,
     roughness: 0.7,
     metalness: 0.3,
   });
   disposables.push(skylineGeo, skylineMat);
+  const skyX = ARENA_HALF_X + 68;
+  const skyZ = ARENA_HALF_Z + 72;
   const skylineCoords: Array<[number, number, number]> = [
-    [-108, 22, -124],
-    [-55, 32, -138],
-    [52, 28, -134],
-    [110, 24, -120],
-    [-112, 26, 122],
-    [-50, 34, 136],
-    [56, 26, 132],
-    [108, 22, 124],
+    [-skyX, 34, -skyZ],
+    [-skyX * 0.52, 48, -(skyZ + 18)],
+    [skyX * 0.48, 42, -(skyZ + 14)],
+    [skyX + 4, 36, -skyZ],
+    [-skyX - 4, 40, skyZ],
+    [-skyX * 0.48, 52, skyZ + 16],
+    [skyX * 0.52, 40, skyZ + 12],
+    [skyX, 34, skyZ],
   ];
   for (const [bx, by, bz] of skylineCoords) {
     const bldg = new THREE.Mesh(skylineGeo, skylineMat);
     bldg.position.set(bx, by, bz);
-    bldg.scale.y = by / 21;
+    bldg.scale.y = by / 28;
     group.add(bldg);
   }
 
   // Instanced Crowd Spectating Dots in Grandstands
-  const crowdGeo = new THREE.BoxGeometry(0.75, 0.75, 0.75);
+  const crowdGeo = new THREE.BoxGeometry(0.85, 0.85, 0.85);
   const crowdMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-  const crowdCount = isSoftwareGl ? 560 : 1680;
+  const crowdCount = isSoftwareGl ? 640 : 1960;
   const crowdInst = new THREE.InstancedMesh(crowdGeo, crowdMat, crowdCount);
   const dummy = new THREE.Object3D();
   const cColor = new THREE.Color();
+  const crowdSpanZ = Math.round(ARENA_HALF_Z * 1.6);
   for (let i = 0; i < crowdCount; i++) {
     const side = i % 2 === 0 ? -1 : 1;
     const tier = Math.floor(i / 2) % 7;
     dummy.position.set(
       side * (ARENA_HALF_X + 8.5 + tier * 1.5),
       2.6 + tier * 1.55,
-      ((i * 29) % 138) - 69,
+      ((i * 29) % crowdSpanZ) - crowdSpanZ / 2,
     );
     dummy.updateMatrix();
     crowdInst.setMatrixAt(i, dummy.matrix);
@@ -822,24 +826,24 @@ export function buildStadium(
   disposables.push(crowdGeo, crowdMat);
 
   // 4 Corner Floodlight Towers outside larger stadium corners
-  const towerGeo = new THREE.CylinderGeometry(1.0, 1.4, 42, 8);
-  const lampGeo = new THREE.BoxGeometry(6.5, 2.6, 1.4);
+  const towerGeo = new THREE.CylinderGeometry(1.2, 1.8, 68, 8);
+  const lampGeo = new THREE.BoxGeometry(9.5, 3.6, 1.8);
   const lampMat = new THREE.MeshBasicMaterial({ color: 0xfef3c7 });
   disposables.push(towerGeo, lampGeo, lampMat);
 
   const towerPositions: Array<[number, number]> = [
-    [-(ARENA_HALF_X + 7), -(ARENA_HALF_Z + 5)],
-    [ARENA_HALF_X + 7, -(ARENA_HALF_Z + 5)],
-    [-(ARENA_HALF_X + 7), ARENA_HALF_Z + 5],
-    [ARENA_HALF_X + 7, ARENA_HALF_Z + 5],
+    [-(ARENA_HALF_X + 10), -(ARENA_HALF_Z + 8)],
+    [ARENA_HALF_X + 10, -(ARENA_HALF_Z + 8)],
+    [-(ARENA_HALF_X + 10), ARENA_HALF_Z + 8],
+    [ARENA_HALF_X + 10, ARENA_HALF_Z + 8],
   ];
   for (const [tx, tz] of towerPositions) {
     const tower = new THREE.Mesh(towerGeo, archMat);
-    tower.position.set(tx, 21, tz);
+    tower.position.set(tx, 34, tz);
     group.add(tower);
 
     const lamp = new THREE.Mesh(lampGeo, lampMat);
-    lamp.position.set(tx, 41.5, tz);
+    lamp.position.set(tx, 67.5, tz);
     lamp.lookAt(0, 0, 0);
     group.add(lamp);
   }
@@ -912,7 +916,7 @@ export function buildStadium(
 
     if (arenaId === 'mannfield_day') {
       scene.background = new THREE.Color(0x60a5fa);
-      scene.fog = new THREE.FogExp2(0x60a5fa, 0.0042);
+      scene.fog = new THREE.FogExp2(0x60a5fa, 0.0020);
       hemiLight.color.setHex(0xe0f2fe);
       hemiLight.groundColor.setHex(0x1e3a2f);
       hemiLight.intensity = 1.05;
@@ -921,7 +925,7 @@ export function buildStadium(
       apronMat.color.setHex(0x164e32);
     } else if (arenaId === 'neo_tokyo') {
       scene.background = new THREE.Color(0x0b0f1d);
-      scene.fog = new THREE.FogExp2(0x0b0f1d, 0.0052);
+      scene.fog = new THREE.FogExp2(0x0b0f1d, 0.0025);
       hemiLight.color.setHex(0x38bdf8);
       hemiLight.groundColor.setHex(0x090d16);
       hemiLight.intensity = 0.9;
@@ -931,7 +935,7 @@ export function buildStadium(
     } else {
       // dfh_night
       scene.background = new THREE.Color(0x0a1324);
-      scene.fog = new THREE.FogExp2(0x0a1324, 0.0048);
+      scene.fog = new THREE.FogExp2(0x0a1324, 0.0023);
       hemiLight.color.setHex(0x93c5fd);
       hemiLight.groundColor.setHex(0x111827);
       hemiLight.intensity = 0.9;

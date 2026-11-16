@@ -103,7 +103,7 @@ test('shots are awarded at the initial touch for fast midfield drives and slow f
     const state = createMatchState('1v1', 'dfh_night', [{ id: 'striker', name: 'Striker', team: 'blue' }]);
     state.phase = 'active';
     const car = state.cars[0];
-    car.pos = v3(0, CAR_RIDE_HEIGHT, speed === 10 ? 72 : 30);
+    car.pos = v3(0, CAR_RIDE_HEIGHT, speed === 10 ? ARENA_HALF_Z - 12 : ARENA_HALF_Z - 54);
     car.quat = quatFromYaw(0);
     car.vel = v3(0, 0, speed);
     state.ball.pos = v3(0, BALL_RADIUS, car.pos.z + 3.2);
@@ -255,7 +255,7 @@ test('driving straight stays grounded across floor and smoothly climbs curved wa
     { id: 'p1', name: 'WallDriver', team: 'blue' },
   ]);
   // Aim straight toward right side wall (+X)
-  state.cars[0].pos = { x: 40, y: CAR_RIDE_HEIGHT, z: 0 };
+  state.cars[0].pos = { x: ARENA_HALF_X - 22, y: CAR_RIDE_HEIGHT, z: 0 };
   state.cars[0].quat = { x: 0, y: Math.SQRT1_2, z: 0, w: Math.SQRT1_2 };
 
   for (let i = 0; i < 150; i++) {
@@ -629,10 +629,10 @@ test('double-jump forward flip keeps pushing the ball ahead instead of passing o
 test('driving up the wall smoothly reaches the ceiling curve without bouncing off', () => {
   const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'WallClimber', team: 'blue' }]);
   const car = state.cars[0];
-  car.pos = v3(22, CAR_RIDE_HEIGHT, 0);
+  car.pos = v3(ARENA_HALF_X - 40, CAR_RIDE_HEIGHT, 0);
   car.quat = quatFromYaw(Math.PI / 2);
   car.vel = v3(20, 0, 0);
-  car.boost = 35;
+  car.boost = 55;
 
   let reachedCeilingTransition = false;
   for (let i = 0; i < 180; i++) {
@@ -645,6 +645,37 @@ test('driving up the wall smoothly reaches the ceiling curve without bouncing of
   }
   assert.equal(reachedCeilingTransition, true, `Car failed to climb smoothly onto ceiling curve: pos=${JSON.stringify(car.pos)}, normal=${JSON.stringify(car.groundNormal)}, onGround=${car.onGround}`);
 });
+
+test('car can balance a roof dribble smoothly and execute crisp low-speed micro-turns', () => {
+  const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'Dribbler', team: 'blue' }]);
+  const car = state.cars[0];
+  car.pos = v3(0, CAR_RIDE_HEIGHT, -20);
+  car.quat = quatFromYaw(0);
+  car.vel = v3(0, 0, 19);
+  state.ball.pos = v3(0, CAR_RIDE_HEIGHT + 0.45 + BALL_RADIUS, -19.75);
+  state.ball.vel = v3(0, -1.2, 18.8);
+
+  for (let i = 0; i < 30; i++) {
+    stepSimulation(state, { p1: { ...NEUTRAL_INPUT, throttle: 1, steer: 0.15 } }, 1 / 60);
+  }
+  const horizOffset = Math.hypot(state.ball.pos.x - car.pos.x, state.ball.pos.z - car.pos.z);
+  assert.ok(horizOffset < 2.2, `Ball drifted off roof during steady carry: offset=${horizOffset}`);
+  assert.ok(state.ball.pos.y > car.pos.y + 1.4, `Ball dropped off roof too early: ball.y=${state.ball.pos.y}`);
+
+  // Low-speed precision turning at 5 m/s for ball alignment
+  const turnState = createMatchState('freeplay', 'dfh_night', [{ id: 'p1', name: 'Turner', team: 'blue' }]);
+  const turnCar = turnState.cars[0];
+  turnCar.pos = v3(0, CAR_RIDE_HEIGHT, -20);
+  turnCar.quat = quatFromYaw(0);
+  turnCar.vel = v3(0, 0, 5);
+  turnState.ball.pos = v3(30, BALL_RADIUS, 30);
+  for (let i = 0; i < 24; i++) {
+    stepSimulation(turnState, { p1: { ...NEUTRAL_INPUT, throttle: 0.4, steer: 1 } }, 1 / 60);
+  }
+  const heading = rotateVecByQuat(v3(0, 0, 1), turnCar.quat);
+  assert.ok(heading.x > 0.75, `Low-speed steering should turn sharply for dribble alignment: heading.x=${heading.x}`);
+});
+
 
 
 

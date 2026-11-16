@@ -134,3 +134,30 @@ test('forward flip push drives the ball cleanly ahead without popping over the c
   }
 });
 
+test('soft roof catch cushions gentle drops and allows roof flick launch', () => {
+  const state = createMatchState('freeplay', 'dfh_night', [{ id: 'p', name: 'Dribbler', team: 'blue' }]);
+  const car = state.cars[0];
+  car.pos = v3(0, 0.56, 0);
+  car.quat = quatFromYaw(0);
+  car.vel = v3(0, 0, 14);
+  car.onGround = true;
+
+  // Gentle drop onto the roof should be cushioned instead of bouncing high
+  state.ball.pos = v3(0, 0.56 + 0.45 + state.ball.radius - 0.05, 0.1);
+  state.ball.vel = v3(0, -2.5, 13.0);
+  assert.ok(resolveBallContact(car, state.ball, MAX_BALL_SPEED));
+  assert.ok(state.ball.vel.y < 0.6, `Expected soft roof catch, got vel.y=${state.ball.vel.y}`);
+
+  // Forward flip while carrying on the roof produces a clean upward + forward flick
+  car.onGround = false;
+  car.isFlipping = true;
+  car.pos = v3(0, 0.85, 0);
+  car.vel = v3(0, 1.0, 18);
+  state.ball.pos = v3(0, 0.85 + 0.45 + state.ball.radius - 0.1, 0.6);
+  state.ball.vel = v3(0, 0.2, 17);
+  assert.ok(resolveBallContact(car, state.ball, MAX_BALL_SPEED));
+  assert.ok(state.ball.vel.z > car.vel.z + 4.0, `Flick must accelerate ahead of car: ball.z=${state.ball.vel.z}, car.z=${car.vel.z}`);
+  assert.ok(state.ball.vel.y >= 4.0, `Roof flick must scoop upward: vel.y=${state.ball.vel.y}`);
+});
+
+

@@ -1,15 +1,38 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildFollowCamera, constrainCamera, smoothCameraUp } from './cameraRig';
-import { ARENA_HEIGHT, ARENA_HALF_Z, GOAL_DEPTH, resolveArenaSphere } from './arena';
+import {
+  ARENA_HALF_X,
+  ARENA_HALF_Z,
+  ARENA_HEIGHT,
+  CEILING_RAMP_RADIUS,
+  CORNER_CHAMFER,
+  GOAL_DEPTH,
+  resolveArenaSphere,
+} from './arena';
 import { dotV3, lenV3, quatFromUnitVectors, subV3, v3 } from './math3d';
 
 test('follow camera stays inside the shell and follows the driving surface on walls, corners and ceiling', () => {
+  const filletOffset = (CEILING_RAMP_RADIUS - 0.56) * Math.SQRT1_2;
   const samples = [
     { pos: v3(0, 0.56, 0), up: v3(0, 1, 0) },
-    { pos: v3(61.44, 12, 0), up: v3(-1, 0, 0) },
-    { pos: v3(55.6, 12, 77.6), up: v3(-Math.SQRT1_2, 0, -Math.SQRT1_2) },
-    { pos: v3(60.725, 24.725, 0), up: v3(-Math.SQRT1_2, -Math.SQRT1_2, 0) },
+    { pos: v3(ARENA_HALF_X - 0.56, 12, 0), up: v3(-1, 0, 0) },
+    {
+      pos: v3(
+        ARENA_HALF_X - CORNER_CHAMFER / 2 - 0.56 * Math.SQRT1_2,
+        12,
+        ARENA_HALF_Z - CORNER_CHAMFER / 2 - 0.56 * Math.SQRT1_2,
+      ),
+      up: v3(-Math.SQRT1_2, 0, -Math.SQRT1_2),
+    },
+    {
+      pos: v3(
+        ARENA_HALF_X - CEILING_RAMP_RADIUS + filletOffset,
+        ARENA_HEIGHT - CEILING_RAMP_RADIUS + filletOffset,
+        0,
+      ),
+      up: v3(-Math.SQRT1_2, -Math.SQRT1_2, 0),
+    },
     { pos: v3(0, ARENA_HEIGHT - 0.56, 0), up: v3(0, -1, 0) },
   ];
   for (const sample of samples) {
@@ -46,3 +69,19 @@ test('camera up rotates smoothly through a ceiling inversion and recovers in the
   for (let i = 0; i < 120; i++) up = smoothCameraUp(up, v3(0, 1, 0), 1 / 60, false);
   assert.ok(up.y > 0.99);
 });
+
+test('Ball Cam does not whip 180 degrees when the ball crosses directly above the car', () => {
+  const car = {
+    pos: v3(0, 0.56, 0),
+    groundNormal: v3(0, 1, 0),
+    onGround: true,
+    quat: quatFromUnitVectors(v3(0, 1, 0), v3(0, 1, 0)),
+  };
+  const aheadView = buildFollowCamera(car, v3(0, 6, 1.2), true);
+  const behindView = buildFollowCamera(car, v3(0, 6, -1.2), true);
+  // Both positions stay smoothly behind the car's heading (-Z) instead of flipping +Z <-> -Z
+  assert.ok(aheadView.position.z < -6, `Expected camera behind car when ball slightly ahead, got z=${aheadView.position.z}`);
+  assert.ok(behindView.position.z < -6, `Expected camera to stay behind car when ball slightly behind overhead, got z=${behindView.position.z}`);
+  assert.ok(lenV3(subV3(aheadView.position, behindView.position)) < 3.0, 'Camera position should stay smooth across overhead crossing');
+});
+

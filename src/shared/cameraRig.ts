@@ -50,11 +50,40 @@ export function buildFollowCamera(car: Pick<CarState, 'pos' | 'quat' | 'onGround
   const heading = tangent(rotateVecByQuat(v3(0, 0, 1), car.quat));
   const fallback = Math.abs(up.z) < 0.9 ? tangent(v3(0, 0, 1)) : tangent(v3(1, 0, 0));
   const forward = normV3(heading, normV3(fallback));
-  const backward = ballCam ? normV3(tangent(subV3(car.pos, ball)), scaleV3(forward, -1)) : scaleV3(forward, -1);
+
+  const toBall = subV3(ball, car.pos);
+  const toBallHoriz = tangent(toBall);
+  const horizDist = lenV3(toBallHoriz);
+
+  // Rocket League Ball Cam stability: when the ball is directly overhead or being dribbled
+  // on the roof (horizDist < ~7.5m), blend azimuth smoothly toward the car's driving heading
+  // instead of snapping 180 degrees as the ball crosses the car's center.
+  const t = Math.max(0, Math.min(1, (horizDist - 1.5) / 6.0));
+  const ballHeadingWeight = t * t * (3 - 2 * t);
+  const ballForwardDir = normV3(toBallHoriz, forward);
+  const camForward = ballCam
+    ? normV3(lerpV3(forward, ballForwardDir, ballHeadingWeight), forward)
+    : forward;
+  const backward = scaleV3(camForward, -1);
+
   const pivot = addV3(car.pos, scaleV3(up, 0.85));
   const position = constrainCamera(pivot, addV3(addV3(car.pos, scaleV3(backward, ballCam ? 10.6 : 10.8)), scaleV3(up, ballCam ? 3.85 : 3.6)));
-  const lookAt = ballCam
-    ? addV3(lerpV3(ball, car.pos, 0.34), scaleV3(up, 0.65))
-    : addV3(addV3(car.pos, scaleV3(forward, 9)), scaleV3(up, 1.4));
+
+  let lookAt: Vec3;
+  if (ballCam) {
+    const rawTarget = addV3(lerpV3(ball, car.pos, 0.34), scaleV3(up, 0.65));
+    // Clamp overhead pitch so the horizon and pitch stay readable when dribbling under a high ball
+    const delta = subV3(rawTarget, car.pos);
+    const upOffset = dotV3(delta, up);
+    const maxUpOffset = Math.max(4.5, horizDist * 0.72);
+    const clampedTarget = upOffset > maxUpOffset
+      ? subV3(rawTarget, scaleV3(up, upOffset - maxUpOffset))
+      : rawTarget;
+    const carCamLook = addV3(addV3(car.pos, scaleV3(forward, 9)), scaleV3(up, 1.4));
+    lookAt = lerpV3(carCamLook, clampedTarget, 0.35 + 0.65 * ballHeadingWeight);
+  } else {
+    lookAt = addV3(addV3(car.pos, scaleV3(forward, 9)), scaleV3(up, 1.4));
+  }
+
   return { position, lookAt, up, pivot };
 }

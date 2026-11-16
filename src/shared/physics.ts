@@ -47,10 +47,10 @@ import type {
 import { DEFAULT_CUSTOMIZATION_BLUE, DEFAULT_CUSTOMIZATION_ORANGE } from './types';
 
 export const GRAVITY = -15.2; // Rocket League-style floaty aerial gravity
-export const MAX_CAR_SPEED = 21.0; // Normal max throttle speed (m/s, ~75 km/h)
+export const MAX_CAR_SPEED = 22.5; // Normal max throttle speed (m/s, ~81 km/h)
 export const SUPERSONIC_THRESHOLD = 26.5; // Supersonic speed threshold (m/s, ~95 km/h)
-export const MAX_BOOST_SPEED = 31.0; // Max boost speed (m/s, ~112 km/h)
-export const MAX_BALL_SPEED = 29.0; // ~104 km/h, below the 112 km/h turbo car speed
+export const MAX_BOOST_SPEED = 34.0; // Max boost speed (m/s, ~122 km/h)
+export const MAX_BALL_SPEED = 32.5; // ~117 km/h, below the 122 km/h turbo car speed
 export const MATCH_DURATION_SECONDS = 300; // 5:00 standard match
 
 export type SimulationEvent =
@@ -427,7 +427,7 @@ function stepCarsOnly(
       if (car.demolishedTimer <= 0) {
         car.demolishedTimer = 0;
         const side = car.id.charCodeAt(0) % 2 === 0 ? -1 : 1;
-        const z = car.team === 'blue' ? -(ARENA_HALF_Z - 14) : ARENA_HALF_Z - 14;
+        const z = car.team === 'blue' ? -(ARENA_HALF_Z - 18) : ARENA_HALF_Z - 18;
         car.pos = v3(side * (ARENA_HALF_X * 0.52), CAR_RIDE_HEIGHT, z);
         car.vel = v3();
         car.quat = quatFromYaw(car.team === 'blue' ? 0 : Math.PI);
@@ -468,7 +468,7 @@ function stepCarsOnly(
       // A smooth second surge above cruising speed makes the supersonic phase
       // distinct without an instantaneous velocity jump.
       const surge = clamp((Math.max(0, forwardSpeed) - 17) / 9.5, 0, 1);
-      const boostAccel = (car.onGround ? 23 : 20) + 14 * surge * surge * (3 - 2 * surge);
+      const boostAccel = (car.onGround ? 25 : 22) + 15 * surge * surge * (3 - 2 * surge);
       car.vel = addV3(car.vel, scaleV3(forward, boostAccel * dt));
     }
 
@@ -483,7 +483,7 @@ function stepCarsOnly(
       if (Math.abs(throttle) > 0.02) {
         // Braking when moving opposite to throttle is snappier
         const braking = Math.sign(throttle) !== Math.sign(forwardSpeed) && Math.abs(forwardSpeed) > 1.5;
-        const accel = braking ? 48.0 : throttle > 0 ? 26.0 : 20.0;
+        const accel = braking ? 50.0 : throttle > 0 ? 29.0 : 22.0;
         if (Math.abs(forwardSpeed) < (godMode ? GOD_MODE_SPEED : MAX_CAR_SPEED) || braking || isBoosting) {
           car.vel = addV3(car.vel, scaleV3(forward, throttle * accel * dt));
         }
@@ -495,19 +495,23 @@ function stepCarsOnly(
 
       // Lateral tire grip (reduced during handbrake/powerslide, sharper in God Mode!)
       const grip = input.handbrake
-        ? godMode ? 4.8 : 2.6
+        ? godMode ? 4.8 : 2.8
         : godMode ? 28.0 : 14.5;
       const latDamp = clamp(grip * dt, 0, 1);
       car.vel = subV3(car.vel, scaleV3(left, lateralSpeed * latDamp));
 
-      // Steering (speed-dependent turn rate, tighter during powerslide and God Mode)
+      // Steering (Rocket League speed-curvature curve: crisp low-speed dribble adjustments + smooth high-speed stability)
       const steer = clamp(input.steer, -1, 1);
       car.steerAngle = lerp(car.steerAngle, steer * (godMode ? 0.56 : 0.42), clamp(16 * dt, 0, 1));
-      const speedFactor = clamp(Math.abs(forwardSpeed) / (godMode ? 5.5 : 9.0), 0, 1);
+      const lowSpeedRamp = clamp(Math.abs(forwardSpeed) / (godMode ? 3.5 : 4.8), 0, 1);
+      const lowSpeedAuthority = lowSpeedRamp * (1.5 - 0.5 * lowSpeedRamp);
+      const highSpeedStability = godMode
+        ? 1.0
+        : 1.0 - 0.22 * clamp((Math.abs(forwardSpeed) - 18.0) / 16.0, 0, 1);
       const turnDir = forwardSpeed >= -0.5 ? 1 : -1;
-      const baseTurnRate = input.handbrake ? 3.4 : 2.55;
+      const baseTurnRate = input.handbrake ? 3.55 : 2.72;
       const turnRate = godMode ? baseTurnRate * 1.65 : baseTurnRate;
-      const yawDelta = steer * turnDir * turnRate * speedFactor * dt;
+      const yawDelta = steer * turnDir * turnRate * lowSpeedAuthority * highSpeedStability * dt;
       if (Math.abs(yawDelta) > 1e-5) {
         const yawQ = quatFromAxisAngle(car.groundNormal, yawDelta);
         car.quat = normQuat(mulQuat(yawQ, car.quat));
@@ -788,9 +792,10 @@ function stepBall(
 
 function stepBallPhysics(ball: BallState, dt: number, events: SimulationEvent[], maxSpeed = MAX_BALL_SPEED): void {
 
-  // Gravity, air drag & natural deceleration
-  ball.vel.y += GRAVITY * 0.92 * dt;
-  const airDrag = Math.exp(-0.08 * dt);
+  // Rocket League ball gravity & air drag: slightly floatier arcs give players time to read bounces & catches
+  ball.vel.y += GRAVITY * 0.78 * dt;
+  const isAirborne = ball.pos.y > ball.radius + 0.08;
+  const airDrag = Math.exp((isAirborne ? -0.045 : -0.08) * dt);
   ball.vel = scaleV3(ball.vel, airDrag);
   ball.angVel = scaleV3(ball.angVel, Math.exp(-0.25 * dt));
 
@@ -812,7 +817,7 @@ function stepBallPhysics(ball: BallState, dt: number, events: SimulationEvent[],
       const bounceSpeed = -vn;
       // Gravity at resting contact must not produce a fresh micro-bounce every tick.
       const restingContact = hit.isFloorOrRamp && bounceSpeed < 0.8;
-      const restitution = restingContact ? 0 : hit.normal.y > 0.8 ? 0.56 : 0.64;
+      const restitution = restingContact ? 0 : hit.normal.y > 0.8 ? 0.60 : 0.66;
       ball.vel = subV3(ball.vel, scaleV3(hit.normal, (1 + restitution) * vn));
 
       // Rolling friction + spin coupling

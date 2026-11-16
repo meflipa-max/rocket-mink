@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { ARENA_HALF_X, ARENA_HALF_Z, ARENA_HEIGHT, CAR_RIDE_HEIGHT, GOAL_HEIGHT } from '../shared/arena';
+import { ARENA_HALF_X, ARENA_HALF_Z, ARENA_HEIGHT, BALL_RADIUS, CAR_RIDE_HEIGHT, GOAL_HEIGHT } from '../shared/arena';
 import { clamp, lerp } from '../shared/math3d';
 import { ClientPrediction } from '../shared/clientPrediction';
 import { buildFollowCamera, constrainCamera, smoothCameraUp } from '../shared/cameraRig';
@@ -204,7 +204,7 @@ export class GameViewportController {
     container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(74, width / height, 0.25, 450);
+    this.camera = new THREE.PerspectiveCamera(74, width / height, 0.25, 950);
 
     // Mandatory Studio Environment Reflection on every device
     const pmrem = new THREE.PMREMGenerator(this.renderer);
@@ -810,9 +810,9 @@ export class GameViewportController {
       // Live world stadium orbital flyover
       const angle = this.elapsed * 0.14;
       this.camera.position.set(
-        Math.cos(angle) * 62,
-        21 + Math.sin(this.elapsed * 0.4) * 3.0,
-        Math.sin(angle) * 74,
+        Math.cos(angle) * 82,
+        28 + Math.sin(this.elapsed * 0.4) * 4.0,
+        Math.sin(angle) * 98,
       );
       this.camera.lookAt(0, 3.0, 0);
       this.camera.fov = 68;
@@ -988,7 +988,7 @@ export class GameViewportController {
         this.rotateBall(frame.ballAngVel, this.replaySampleTime === null ? 0 : frame.t - this.replaySampleTime);
         this.replaySampleTime = frame.t;
         this.ballRig.indicatorRing.position.set(frame.ballPos.x, 0.03, frame.ballPos.z);
-        const hScale = clamp(1 - (frame.ballPos.y - 1.65) / 24, 0.35, 1.0);
+        const hScale = clamp(1 - (frame.ballPos.y - BALL_RADIUS) / 46, 0.35, 1.0);
         this.ballRig.indicatorRing.scale.setScalar(hScale);
 
         let scorerCarFrame =
@@ -1057,9 +1057,9 @@ export class GameViewportController {
           const goalZ = scoredBlueGoal ? -ARENA_HALF_Z : ARENA_HALF_Z;
           const dirInward = scoredBlueGoal ? 1 : -1;
           _v3.set(
-            this.displayBallPos.x >= 0 ? -15 : 15,
-            6.2,
-            goalZ + dirInward * 18,
+            this.displayBallPos.x >= 0 ? -24 : 24,
+            9.0,
+            goalZ + dirInward * 26,
           );
           this.cameraPos.lerp(_v3, replayStarting ? 1 : 1 - Math.exp(-7 * dt));
           _v1.copy(this.displayBallPos);
@@ -1109,10 +1109,15 @@ export class GameViewportController {
     this.ballRig.group.position.copy(this.displayBallPos);
     this.rotateBall(this.activeState.ball.angVel, dt);
 
-    // Ground projection indicator ring scales cleanly with ball height
+    // Ground projection indicator ring scales & glows subtly as ball enters playable ground/dribble height
     this.ballRig.indicatorRing.position.set(this.displayBallPos.x, 0.03, this.displayBallPos.z);
-    const heightScale = clamp(1 - (this.displayBallPos.y - 1.65) / 24, 0.35, 1.0);
+    const heightAboveTurf = Math.max(0, this.displayBallPos.y - BALL_RADIUS);
+    const heightScale = clamp(1 - heightAboveTurf / 46, 0.35, 1.0);
     this.ballRig.indicatorRing.scale.setScalar(heightScale);
+    const ringMat = this.ballRig.indicatorRing.material as THREE.MeshBasicMaterial;
+    const catchZone = clamp(1 - heightAboveTurf / 6.0, 0, 1);
+    ringMat.opacity = 0.42 + catchZone * 0.38;
+    ringMat.color.setHex(heightAboveTurf < 3.5 ? 0xfef08a : 0xffffff);
 
     const w = this.container.clientWidth || window.innerWidth;
     const h = this.container.clientHeight || window.innerHeight;

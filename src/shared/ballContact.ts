@@ -1,11 +1,15 @@
-import { CAR_HALF_EXTENTS } from './arena';
-import { addV3, clamp, crossV3, dotV3, lenSqV3, lenV3, normV3, rotateVecByInvQuat, rotateVecByQuat, scaleV3, subV3, v3 } from './math3d';
+import { CAR_HALF_EXTENTS, CAR_RIDE_HEIGHT } from './arena';
+import { addV3, clamp, crossV3, dotV3, lenSqV3, lenV3, lerp, normV3, rotateVecByInvQuat, rotateVecByQuat, scaleV3, subV3, v3 } from './math3d';
 import type { BallState, CarState } from './types';
 
-/** Resolves a sphere against the actual oriented chassis, including contact velocity and friction. */
+/** Resolves a sphere against the actual oriented chassis with Rocket League-style dribbling, soft catches, and shot shaping. */
 export function resolveBallContact(car: CarState, ball: BallState, maxBallSpeed: number): boolean {
   const localBall = rotateVecByInvQuat(subV3(ball.pos, car.pos), car.quat);
-  const closest = v3(clamp(localBall.x, -CAR_HALF_EXTENTS.x, CAR_HALF_EXTENTS.x), clamp(localBall.y, -CAR_HALF_EXTENTS.y, CAR_HALF_EXTENTS.y), clamp(localBall.z, -CAR_HALF_EXTENTS.z, CAR_HALF_EXTENTS.z));
+  const closest = v3(
+    clamp(localBall.x, -CAR_HALF_EXTENTS.x, CAR_HALF_EXTENTS.x),
+    clamp(localBall.y, -CAR_HALF_EXTENTS.y, CAR_HALF_EXTENTS.y),
+    clamp(localBall.z, -CAR_HALF_EXTENTS.z, CAR_HALF_EXTENTS.z),
+  );
   const difference = subV3(localBall, closest);
   const distanceSq = lenSqV3(difference);
   if (distanceSq >= ball.radius ** 2) return false;
@@ -21,36 +25,59 @@ export function resolveBallContact(car: CarState, ball: BallState, maxBallSpeed:
     penetration += CAR_HALF_EXTENTS[axis] - Math.abs(localBall[axis]);
   } else {
     const horizLen = Math.hypot(difference.x, difference.z);
-    // On ground, the ball center sits ~1.09m above the car center (0.56m vs 1.65m).
-    // Adjusting the effective upper bumper reference prevents forward strikes from popping
-    // the ball steeply over the car's roof while keeping aerial/roof contacts natural.
-    if (horizLen > 0.25 && localBall.y > CAR_HALF_EXTENTS.y) {
-      const bumperEffectiveTop = CAR_HALF_EXTENTS.y + 0.56;
+    // Keep roof carries smoothly cradling the ball above the roof, while bumper strikes
+    // use an elevated effective upper bumper so grounded forward hits drive ahead cleanly.
+    const sittingOnRoof = localNormal.y > 0.72 && localBall.y > CAR_HALF_EXTENTS.y + ball.radius * 0.68;
+    if (!sittingOnRoof && horizLen > 0.25 && localBall.y > CAR_HALF_EXTENTS.y) {
+      const bumperEffectiveTop = Math.max(CAR_HALF_EXTENTS.y + 0.56, ball.radius - CAR_RIDE_HEIGHT - 0.08);
       const hitDiffY = Math.max(0, localBall.y - bumperEffectiveTop) * 0.65;
       localNormal = normV3(v3(difference.x, hitDiffY, difference.z));
+    }
+
+    // Rocket League directional hit shaping: blend steep corner edge normals slightly toward
+    // the vector from slightly behind car center to ball center so angled shots aim reliably.
+    if (car.onGround && Math.abs(localNormal.y) < 0.45 && Math.abs(localBall.x) > 0.15) {
+      const centerAim = normV3(v3(localBall.x, localNormal.y, localBall.z + 0.4));
+      localNormal = normV3(v3(
+        lerp(localNormal.x, centerAim.x, 0.28),
+        localNormal.y,
+        lerp(localNormal.z, centerAim.z, 0.28),
+      ));
     }
   }
   let normal = normV3(rotateVecByQuat(localNormal, car.quat));
 
+  // Distinguish roof carry/dribble contacts from low bumper drives
+  const roofContact = car.onGround && localNormal.y > 0.58 && localBall.y > CAR_HALF_EXTENTS.y;
+  const roofFlickWindow = car.isFlipping && localBall.y > CAR_HALF_EXTENTS.y + 0.55 && ball.pos.y < car.pos.y + ball.radius + 2.2;
+
   // When pushing the ball during a dodge/flip, prevent steep vertical loft (passing over the car)
-  // or downward slams into the turf (bouncing behind/over while the car flies over the ball).
+  // or downward slams into the turf, while allowing genuine roof flicks to scoop cleanly!
   const toBallHoriz = v3(ball.pos.x - car.pos.x, 0, ball.pos.z - car.pos.z);
   const toBallHorizLen = Math.hypot(toBallHoriz.x, toBallHoriz.z);
   const carHorizSpeed = Math.hypot(car.vel.x, car.vel.z);
   let flipPushDrive = false;
+  let roofFlick = false;
   if (car.isFlipping && toBallHorizLen > 0.15 && carHorizSpeed > 3.5) {
     const pushDir = scaleV3(toBallHoriz, 1 / toBallHorizLen);
     const velHorizDir = scaleV3(v3(car.vel.x, 0, car.vel.z), 1 / carHorizSpeed);
-    if (dotV3(pushDir, velHorizDir) > 0.15 && ball.pos.y < 4.5) {
+    if (dotV3(pushDir, velHorizDir) > 0.15 && ball.pos.y < 4.8) {
       flipPushDrive = true;
-      const clampedY = clamp(normal.y, 0.06, 0.22);
-      const horizScale = Math.sqrt(Math.max(0.01, 1 - clampedY * clampedY));
-      normal = normV3(v3(pushDir.x * horizScale, clampedY, pushDir.z * horizScale));
+      if (roofFlickWindow && ball.pos.y >= car.pos.y + 1.55) {
+        roofFlick = true;
+        const clampedY = clamp(normal.y, 0.28, 0.52);
+        const horizScale = Math.sqrt(Math.max(0.01, 1 - clampedY * clampedY));
+        normal = normV3(v3(pushDir.x * horizScale, clampedY, pushDir.z * horizScale));
+      } else {
+        const clampedY = clamp(normal.y, 0.06, 0.22);
+        const horizScale = Math.sqrt(Math.max(0.01, 1 - clampedY * clampedY));
+        normal = normV3(v3(pushDir.x * horizScale, clampedY, pushDir.z * horizScale));
+      }
     }
   }
 
   const contactArm = rotateVecByQuat(closest, car.quat);
-  ball.pos = addV3(ball.pos, scaleV3(normal, penetration + (flipPushDrive ? 0.12 : 0.02)));
+  ball.pos = addV3(ball.pos, scaleV3(normal, penetration + (flipPushDrive ? 0.12 : roofContact ? 0.0005 : 0.02)));
   // The chassis contact point (not the ball center) determines a rotating bumper's speed.
   let rotationalVelocity = crossV3(car.angVel, contactArm);
   rotationalVelocity = scaleV3(rotationalVelocity, Math.min(1, 8 / Math.max(lenV3(rotationalVelocity), 1e-6)));
@@ -60,32 +87,42 @@ export function resolveBallContact(car: CarState, ball: BallState, maxBallSpeed:
   const closing = dotV3(relativeVelocity, normal);
   if (closing >= -1e-6) return false;
 
-  const carInverseMass = 0.12;
-  const impulse = -(1 + 0.55) * closing / (1 + carInverseMass);
+  // Rocket League one-way feel: ball hits barely slow down or deflect the car.
+  const carInverseMass = 0.03;
+  // Soft catch: gentle drops onto a grounded car roof absorb bounce so dribbling/carrying works cleanly.
+  const restitution = roofContact
+    ? lerp(0.04, 0.55, clamp((-closing - 2.0) / 5.0, 0, 1))
+    : 0.55;
+  const impulse = -(1 + restitution) * closing / (1 + carInverseMass);
   const normalImpulse = scaleV3(normal, impulse);
   ball.vel = addV3(ball.vel, normalImpulse);
   car.vel = subV3(car.vel, scaleV3(normalImpulse, carInverseMass));
 
-  // Bounded surface friction transfers sideways motion and spin without a fake forward/upward kick.
+  // Surface friction transfers spin & couples the ball during roof dribbling without fake kicks.
   const tangent = subV3(relativeVelocity, scaleV3(normal, closing));
   const tangentSpeed = lenV3(tangent);
   if (tangentSpeed > 1e-6) {
-    const frictionImpulse = scaleV3(tangent, -Math.min(tangentSpeed / (3.5 + carInverseMass), impulse * 0.22) / tangentSpeed);
+    const denom = roofContact ? 1.85 + carInverseMass : 3.5 + carInverseMass;
+    const maxFriction = roofContact
+      ? Math.max(impulse * 0.35, Math.min(tangentSpeed * 0.42, 1.8))
+      : impulse * 0.22;
+    const frictionImpulse = scaleV3(tangent, -Math.min(tangentSpeed / denom, maxFriction) / tangentSpeed);
     ball.vel = addV3(ball.vel, frictionImpulse);
     car.vel = subV3(car.vel, scaleV3(frictionImpulse, carInverseMass));
-    ball.angVel = addV3(ball.angVel, scaleV3(crossV3(ballArm, frictionImpulse), 2.5 / (ball.radius ** 2)));
+    const spinFactor = roofContact ? 0.95 : 2.5;
+    ball.angVel = addV3(ball.angVel, scaleV3(crossV3(ballArm, frictionImpulse), spinFactor / (ball.radius ** 2)));
   }
 
-  // On a flip push, keep the ball cleanly ahead of the car rather than overtaking it in mid-flip.
+  // On a flip push or roof flick, launch the ball cleanly ahead of the car.
   if (flipPushDrive) {
     const pushDir = scaleV3(toBallHoriz, 1 / toBallHorizLen);
     const carPushSpeed = dotV3(car.vel, pushDir);
     const ballPushSpeed = dotV3(ball.vel, pushDir);
-    const targetBallPush = Math.min(maxBallSpeed * 0.98, Math.max(ballPushSpeed, carPushSpeed + 4.5));
+    const targetBallPush = Math.min(maxBallSpeed * 0.98, Math.max(ballPushSpeed, carPushSpeed + (roofFlick ? 6.2 : 4.5)));
     if (targetBallPush > ballPushSpeed) {
       ball.vel = addV3(ball.vel, scaleV3(pushDir, targetBallPush - ballPushSpeed));
     }
-    ball.vel.y = clamp(ball.vel.y, 0.4, 5.2);
+    ball.vel.y = roofFlick ? clamp(ball.vel.y, 4.2, 10.5) : clamp(ball.vel.y, 0.4, 5.2);
   }
 
   const speed = lenV3(ball.vel);

@@ -1,17 +1,17 @@
 import type { BoostPadState, Team, Vec3 } from './types';
 import { clamp, normV3 } from './math3d';
 
-// Spacious Rocket League-inspired arena proportions (in meters)
-export const ARENA_HALF_X = 62.0; // Total width = 124m
-export const ARENA_HALF_Z = 84.0; // Total length = 168m
-export const ARENA_HEIGHT = 26.0; // Ceiling height
-export const CORNER_CHAMFER = 12.0; // Compact corners leave longer flat walls
-export const RAMP_RADIUS = 4.5; // Floor-to-wall curve
-export const CEILING_RAMP_RADIUS = 5.5; // Smooth upper curve so cars climb cleanly onto the ceiling
-export const GOAL_HALF_X = 11.5; // Goal width = 23m
-export const GOAL_HEIGHT = 7.8; // Goal height = 7.8m
-export const GOAL_DEPTH = 10.5; // Goal net depth
-export const BALL_RADIUS = 1.65; // Classic oversized Rocket League soccer ball
+// Authentic Rocket League-scale stadium proportions (in meters)
+export const ARENA_HALF_X = 104.0; // Total width = 208m
+export const ARENA_HALF_Z = 130.0; // Total length = 260m
+export const ARENA_HEIGHT = 50.0; // High aerial ceiling = 50m
+export const CORNER_CHAMFER = 28.0; // Sweeping 45-degree Rocket League corners
+export const RAMP_RADIUS = 5.5; // Smooth floor-to-wall curve
+export const CEILING_RAMP_RADIUS = 7.5; // Smooth upper curve so cars climb cleanly onto the ceiling
+export const GOAL_HALF_X = 17.5; // Goal width = 35m
+export const GOAL_HEIGHT = 11.8; // Goal height = 11.8m
+export const GOAL_DEPTH = 15.0; // Goal net depth = 15m
+export const BALL_RADIUS = 1.95; // Classic oversized Rocket League soccer ball (~1.11x car length)
 export const CAR_HALF_EXTENTS: Vec3 = { x: 1.05, y: 0.45, z: 1.75 };
 export const CAR_RIDE_HEIGHT = 0.56;
 
@@ -259,12 +259,12 @@ export function createBoostPads(): BoostPadState[] {
 
   // 6 Big Boost Orbs (100 boost, 10s respawn)
   const bigCoords: Array<[number, number]> = [
-    [-50.0, -68.0],
-    [50.0, -68.0],
-    [-50.0, 68.0],
-    [50.0, 68.0],
-    [-55.0, 0],
-    [55.0, 0],
+    [-76.0, -102.0],
+    [76.0, -102.0],
+    [-76.0, 102.0],
+    [76.0, 102.0],
+    [-89.0, 0],
+    [89.0, 0],
   ];
   for (const [x, z] of bigCoords) {
     pads.push({ id: id++, pos: { x, y: 0.9, z }, isBig: true, active: true, respawnTimer: 0 });
@@ -273,36 +273,36 @@ export function createBoostPads(): BoostPadState[] {
   // 28 Small Boost Pads (12 boost, 4s respawn)
   const smallCoords: Array<[number, number]> = [
     // Center line
-    [-24, 0],
-    [24, 0],
+    [-28, 0],
+    [28, 0],
     // Blue half (-Z)
-    [0, -20],
-    [-16, -26],
-    [16, -26],
-    [-38, -32],
-    [38, -32],
-    [-26, -48],
-    [26, -48],
-    [0, -50],
-    [-15, -64],
-    [15, -64],
-    [0, -72],
-    [-34, -68],
-    [34, -68],
+    [0, -28],
+    [-24, -38],
+    [24, -38],
+    [-64, -48],
+    [64, -48],
+    [-44, -72],
+    [44, -72],
+    [0, -76],
+    [-24, -98],
+    [24, -98],
+    [0, -112],
+    [-54, -104],
+    [54, -104],
     // Orange half (+Z)
-    [0, 20],
-    [-16, 26],
-    [16, 26],
-    [-38, 32],
-    [38, 32],
-    [-26, 48],
-    [26, 48],
-    [0, 50],
-    [-15, 64],
-    [15, 64],
-    [0, 72],
-    [-34, 68],
-    [34, 68],
+    [0, 28],
+    [-24, 38],
+    [24, 38],
+    [-64, 48],
+    [64, 48],
+    [-44, 72],
+    [44, 72],
+    [0, 76],
+    [-24, 98],
+    [24, 98],
+    [0, 112],
+    [-54, 104],
+    [54, 104],
   ];
 
   for (const [x, z] of smallCoords) {
@@ -323,11 +323,11 @@ export interface KickoffSlot {
  */
 export function getKickoffSpawn(team: Team, slotIndex: number): KickoffSlot {
   const blueSlots: KickoffSlot[] = [
-    { pos: { x: -28, y: CAR_RIDE_HEIGHT, z: -38 }, yaw: Math.atan2(28, 38) }, // Left diagonal
-    { pos: { x: 28, y: CAR_RIDE_HEIGHT, z: -38 }, yaw: Math.atan2(-28, 38) }, // Right diagonal
-    { pos: { x: 0, y: CAR_RIDE_HEIGHT, z: -64 }, yaw: 0 }, // Center goalie
-    { pos: { x: -7, y: CAR_RIDE_HEIGHT, z: -56 }, yaw: 0.08 }, // Left back
-    { pos: { x: 7, y: CAR_RIDE_HEIGHT, z: -56 }, yaw: -0.08 }, // Right back
+    { pos: { x: -50, y: CAR_RIDE_HEIGHT, z: -64 }, yaw: Math.atan2(50, 64) }, // Left diagonal
+    { pos: { x: 50, y: CAR_RIDE_HEIGHT, z: -64 }, yaw: Math.atan2(-50, 64) }, // Right diagonal
+    { pos: { x: 0, y: CAR_RIDE_HEIGHT, z: -110 }, yaw: 0 }, // Center goalie
+    { pos: { x: -9, y: CAR_RIDE_HEIGHT, z: -96 }, yaw: 0.09 }, // Left back
+    { pos: { x: 9, y: CAR_RIDE_HEIGHT, z: -96 }, yaw: -0.09 }, // Right back
   ];
 
   const slot = blueSlots[slotIndex % blueSlots.length];
